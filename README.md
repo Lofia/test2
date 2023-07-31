@@ -1,4 +1,4 @@
-### Run the following code in R to install:
+### Run the following code in R console to install:
 
   if(!require("devtools")){install.packages("pbapply");library(pbapply)}  
   install_github('Lofia/test2')
