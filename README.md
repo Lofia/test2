@@ -1,6 +1,6 @@
 ### Run the following code in R to install:
 
-  if(!require("devtools")) install.packages("devtools")  
+  if(!require("devtools")){install.packages("pbapply");library(pbapply)}  
   install_github('Lofia/test2')
 
 ### Try the following code:
