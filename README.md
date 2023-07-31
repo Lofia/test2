@@ -1,9 +1,9 @@
-- Run the following code in R to install:
+### Run the following code in R to install:
 
   if(!require("devtools")) install.packages("devtools")  
   install_github('Lofia/test2')
 
-- Try the following code:
+### Try the following code:
 
   library(test2)  
   ?power_of_P_test  
