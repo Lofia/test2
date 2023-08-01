@@ -110,5 +110,5 @@ test1=function(x,alpha=0.05){
   if(lambda>critic) print(paste('Since lambda = ',round(lambda,3),' > ',round(critic,3)
                                 ,' = critical value ,we reject the null (no bias) hypothesis.',sep=''))
   else print(paste('Since lambda = ',round(lambda,3),' < ',round(critic,3)
-                                ,' = critical value ,we reject the null (no bias) hypothesis.',sep=''))
+                                ,' = critical value ,we fail to reject the null (no bias) hypothesis.',sep=''))
 }
