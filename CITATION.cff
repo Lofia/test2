@@ -1,0 +1,19 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: 'R package: test2'
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Zixiang
+    family-names: Xu
+    email: zxu27@gmu.edu
+    name-particle: Zixiang
+  - given-names: Jiayang
+    family-names: Sun
+    email: jsun21@gmu.edu
+license: MIT
+version: 0.0.1
