@@ -1,0 +1,5 @@
+library(devtools);library(usethis)
+use_r()
+command+option+shift+p
+document()
+check()

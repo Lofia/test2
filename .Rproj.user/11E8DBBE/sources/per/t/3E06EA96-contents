@@ -1,0 +1,376 @@
+---
+title: "Keywords Analysis"
+author: "Zixiang Xu"
+output:
+  html_document:
+    keep_md: true
+    number_sections: no
+    theme:
+      version: 4
+      bootswatch: united
+    toc: no
+    toc_float: yes
+  html_notebook:
+    theme: united
+    toc: no
+    toc_float: yes
+  word_document:
+    toc: no
+  pdf_document:
+    toc: no
+---
+
+```{=html}
+<style type="text/css">
+    #header {
+        text-align: center;
+    }
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_knit$set(root.dir = 'C:/Users/Zixiang Xu/Desktop/GMU/JY Sun')
+```
+
+### 1. Read the dictionary
+```{r}
+d=read.csv("crowd2Xu/Dictionary Maker/output/CrowdEpi.csv")
+newd=data.frame(
+  Annotate=d$annotate+d$annotated,#;newd=subset(newd,select=-c(annotated))
+  #Combine=d$combine,0
+  Crowdsource=d$crowd+d$crowdsource+d$crowd.source+d$crowdsourced+d$crowd.sourced+d$crowdsourcing+d$crowd.sourcing+d$X23andme+d$patientslikeme+d$citizen+d$citizens+d$turk+d$amazon+d$microtask,
+  Data=d$data,
+  Diagnose=d$diagnose+d$diagnosis,
+  Dictionary=d$dictionary,
+  Disease=d$disease+d$diseases+d$flu+d$virus,
+  Experience=d$experience+d$experienced,
+  Extract=d$extract+d$extraction+d$extraction.1+d$extracted,
+  Gold=d$gold,
+  Health=d$health,
+  Image=d$image,
+  #Knowledge=d$knowledge,0
+  Medical=d$medical,
+  #Media=d$media
+  Natural=d$natural,
+  Non.Expert=d$non.expert,
+  Online=d$online+d$online.1,#+d$online.2
+  Performance=d$performance,
+  Person=d$user+d$user.1+d$users+d$users.1+d$player+d$players+d$individual+d$individuals+d$turkers+d$respondents+d$workers+d$participant+d$participants+d$people,
+  Post=d$post.1+d$posting.1+d$posts.1+d$post+d$posts,
+  Quality=d$quality,
+  Query=d$query,
+  Recruit=d$recruit+d$recruitment,
+  Reliability=d$reliability,
+  Screen=d$screen,
+  Self.report=d$self.report+d$self.reported+d$patient.reported,
+  Survey=d$survey,
+  Symptom=d$symptom,
+  Text=d$text,
+  Train=d$train+d$trained,
+  #d$tweet
+  Validate=d$validate+d$validated+d$validation,
+  Numword=d$numWord
+)
+md=as.matrix(newd)
+head(md[,c(30,1:7)],20)
+
+d2=read.csv("crowd2Xu/Dictionary Maker/output/Bogus.csv")
+newd2=data.frame(
+  Annotate=d2$annotate+d2$annotated,#;newd=subset(newd,select=-c(annotated))
+  #Combine=d2$combine,0
+  Crowdsource=d2$crowd+d2$crowdsource+d2$crowd.source+d2$crowdsourced+d2$crowd.sourced+d2$crowdsourcing+d2$crowd.sourcing+d2$X23andme+d2$patientslikeme+d2$citizen+d2$citizens+d2$turk+d2$amazon+d2$microtask,
+  Data=d2$data,
+  Diagnose=d2$diagnose+d2$diagnosis,
+  Dictionary=d2$dictionary,
+  Disease=d2$disease+d2$diseases+d2$flu+d2$virus,
+  Experience=d2$experience+d2$experienced,
+  Extract=d2$extract+d2$extraction+d2$extraction.1+d2$extracted,
+  Gold=d2$gold,
+  Health=d2$health,
+  Image=d2$image,
+  #Knowledge=d2$knowledge,0
+  Medical=d2$medical,
+  #Media=d2$media
+  Natural=d2$natural,
+  Non.Expert=d2$non.expert,
+  Online=d2$online+d2$online.1,#+d2$online.2
+  Performance=d2$performance,
+  Person=d2$user+d2$user.1+d2$users+d2$users.1+d2$player+d2$players+d2$individual+d2$individuals+d2$turkers+d2$respondents+d2$workers+d2$participant+d2$participants+d2$people,
+  Post=d2$post.1+d2$posting.1+d2$posts.1+d2$post+d2$posts,
+  Quality=d2$quality,
+  Query=d2$query,
+  Recruit=d2$recruit+d2$recruitment,
+  Reliability=d2$reliability,
+  Screen=d2$screen,
+  Self.report=d2$self.report+d2$self.reported+d2$patient.reported,
+  Survey=d2$survey,
+  Symptom=d2$symptom,
+  Text=d2$text,
+  Train=d2$train+d2$trained,
+  #d2$tweet
+  Validate=d2$validate+d2$validated+d2$validation,
+  Numword=d2$numWord
+)
+md2=as.matrix(newd2)
+head(md2[,c(30,1:7)],20)
+```
+
+### 2. Prepare the data
+```{r}
+s=colSums(md)
+s2=colSums(md2)
+r=s[length(s)]/s2[length(s2)]
+s[s==0]=0.1*r
+s2[s2==0]=0.1
+WF=cbind(t(t(s)),t(t(s2)))
+colnames(WF)=c('CrowdEpi','Control')
+# WF_print=cbind(colnames(newd),
+#   formatC(as.numeric(WF[,1]),format="f",digits=2),
+#   formatC(as.numeric(WF[,2]),format="f",digits=2))
+# colnames(WF_print)=c('key_word','CrowdEpi','Control')
+# WF_print
+WF_new=WF #for the comparison of new and old data
+WF
+```
+
+### 3. Analysis of Log Odds Ratio
+$$\text{Log Odds Ratio }=\log_2(\frac{\frac{\text{Number of occourance per term in CrowdEpi}}{\text{Number of occourance of all the terms in CrowdEpi - Number of occourance per term in CrowdEpi}}}{\frac{\text{Number of occourance per term in Control}}{\text{Number of occourance of all the terms in Control - Number of occourance per term in Control}}})$$
+```{r fig.height=10, fig.width=10}
+#$$\text{Log Odds Ratio }=\log_2(\frac{\frac{\text{Number of occourance per term for CrowdEpi}}{\text{Number of total words for CrowdEpi}}}{\frac{\text{Number of occourance per term for Bogus}}{\text{Number of total words for Bogus}}})$$
+par(las=2,mar=c(5,7,4,1)+.1)
+#LOR=log2(WF[,1][-length(WF)/2]/WF[,2][-length(WF)/2]*WF[,2][length(WF)/2]/WF[,1][length(WF)/2])
+WF2=WF[-length(WF)/2,]
+LOR=log2(WF2[,1]/WF2[,2]*(colSums(WF2)[2]-WF2[,2])/(colSums(WF2)[1]-WF2[,1]))
+barplot((sort(LOR,decreasing=FALSE)),horiz=TRUE,main="CrowdEpi v.s. Control")
+```
+
+### 4. Conditional Mosaic (Standardized)
+```{r fig.width=12,fig.height=10}
+#mosaicplot(WF2)
+library(vcd)
+WFsd=cbind(WF2[,1]/colSums(WF2)[1],WF2[,2]/colSums(WF2)[2])
+colnames(WFsd)=c('CrowdEpi','Control')
+mosaicplot(WFsd,las=3,cex.axis=1)
+```
+
+
+
+### 5. Correspondence Analysis
+```{r fig.height=10, fig.width=10}
+cc=function(x, printout=FALSE){
+ rsum=apply(x,1,sum)
+ csum=apply(x,2,sum)
+ n=sum(x)
+ rsum=matrix(rsum,ncol=1)
+ csum=matrix(csum,ncol=1)
+ ee=rsum %*% t(csum)/n
+ cc=(x-ee)/sqrt(ee)
+ d=svd(cc)
+ I=dim(x)[1]
+ J=dim(x)[2]
+ xs=sum((d$d^2))
+ pv=1-pchisq(xs,(I-1)*(J-1))
+ y=rbind(d$u,d$v)
+ plot(y[, 1], y[, 2], type = "n", xlab = "Correspondence Coord 1", ylab = "Correspondence Coord 2")
+ text(y[,1],y[,2],c(dimnames(x)[[1]],dimnames(x)[[2]]),col=c(rep(2,I),rep(3,J)),cex=0.75)
+ points(0,0)
+ intertia=sum((d$d[1:2]^2))/xs
+ if(printout) list(pvalue=pv,xsq=xs,inertia=intertia,rsum=rsum,csum=csum)
+}
+
+cc(WF2)
+```
+
+### 6. Original data analysis
+```{r}
+files=list.files(path='data-files/files/',pattern='*.txt',full.names=FALSE)
+files188=gsub("\\..*","",files)
+un=read.csv("original_data.csv",sep=';')
+rownames(un)=gsub("\\..*","",un$filename)
+#un$filename=gsub("\\..*","",un$filename)
+index_CrowdEpi=intersect(files188,rownames(un))
+index_control=setdiff(rownames(un),index_CrowdEpi)
+d=un[index_CrowdEpi,]
+newd=data.frame(
+  Annotate=d$annotate+d$annotated,#;newd=subset(newd,select=-c(annotated))
+  #Combine=d$combine,0
+  Crowdsource=d$crowd+d$crowdsource+d$crowd.source+d$crowdsourced+d$crowd.sourced+d$crowdsourcing+d$crowd.sourcing+d$X23andme+d$patientslikeme+d$citizen+d$citizens+d$turk+d$amazon+d$microtask,
+  Data=d$data,
+  Diagnose=d$diagnose+d$diagnosis,
+  Dictionary=d$dictionary,
+  Disease=d$disease+d$diseases+d$flu+d$virus,
+  Experience=d$experience+d$experienced,
+  Extract=d$extract+d$extraction+d$extraction.1,#+d$extracted-----
+  Gold=d$gold,
+  Health=d$health,
+  Image=d$image,
+  #Knowledge=d$knowledge,0
+  Medical=d$medical,
+  #Media=d$media
+  Natural=d$natural,
+  Non.Expert=d$non.expert,
+  #Online=d$online+d$online.1,#+d$online.2-----
+  Performance=d$performance,
+  Person=d$user+d$user.1+d$users+d$users.1+d$player+d$players+d$individual+d$individuals+d$turkers+d$respondents+d$workers+d$participant+d$participants+d$people,
+  #Post=d$post.1+d$posting.1+d$posts.1+d$post+d$posts,-----
+  Quality=d$quality,
+  Query=d$query,
+  Recruit=d$recruit+d$recruitment,
+  Reliability=d$reliability,
+  Screen=d$screen,
+  Self.report=d$self.report+d$self.reported+d$patient.reported,
+  Survey=d$survey,
+  Symptom=d$symptom,
+  Text=d$text,
+  Train=d$train+d$trained,
+  #d$tweet
+  Validate=d$validate+d$validated+d$validation,
+  Numword=d$numWord
+)
+md=as.matrix(newd)
+#head(md[,c(30,1:7)],20)
+
+d2=un[index_control,]
+newd2=data.frame(
+  Annotate=d2$annotate+d2$annotated,#;newd=subset(newd,select=-c(annotated))
+  #Combine=d2$combine,0
+  Crowdsource=d2$crowd+d2$crowdsource+d2$crowd.source+d2$crowdsourced+d2$crowd.sourced+d2$crowdsourcing+d2$crowd.sourcing+d2$X23andme+d2$patientslikeme+d2$citizen+d2$citizens+d2$turk+d2$amazon+d2$microtask,
+  Data=d2$data,
+  Diagnose=d2$diagnose+d2$diagnosis,
+  Dictionary=d2$dictionary,
+  Disease=d2$disease+d2$diseases+d2$flu+d2$virus,
+  Experience=d2$experience+d2$experienced,
+  Extract=d2$extract+d2$extraction+d2$extraction.1,#+d2$extracted
+  Gold=d2$gold,
+  Health=d2$health,
+  Image=d2$image,
+  #Knowledge=d2$knowledge,0
+  Medical=d2$medical,
+  #Media=d2$media
+  Natural=d2$natural,
+  Non.Expert=d2$non.expert,
+  #Online=d2$online+d2$online.1,#+d2$online.2
+  Performance=d2$performance,
+  Person=d2$user+d2$user.1+d2$users+d2$users.1+d2$player+d2$players+d2$individual+d2$individuals+d2$turkers+d2$respondents+d2$workers+d2$participant+d2$participants+d2$people,
+  #Post=d2$post.1+d2$posting.1+d2$posts.1+d2$post+d2$posts,
+  Quality=d2$quality,
+  Query=d2$query,
+  Recruit=d2$recruit+d2$recruitment,
+  Reliability=d2$reliability,
+  Screen=d2$screen,
+  Self.report=d2$self.report+d2$self.reported+d2$patient.reported,
+  Survey=d2$survey,
+  Symptom=d2$symptom,
+  Text=d2$text,
+  Train=d2$train+d2$trained,
+  #d2$tweet
+  Validate=d2$validate+d2$validated+d2$validation,
+  Numword=d2$numWord
+)
+md2=as.matrix(newd2)
+
+s=colSums(md)
+s2=colSums(md2)
+r=s[length(s)]/s2[length(s2)]
+s[s==0]=0.1*r
+s2[s2==0]=0.1
+WF=cbind(t(t(s)),t(t(s2)))
+colnames(WF)=c('CrowdEpi','Control')
+# WF_print=cbind(colnames(newd),
+#   formatC(as.numeric(WF[,1]),format="f",digits=2),
+#   formatC(as.numeric(WF[,2]),format="f",digits=2))
+# colnames(WF_print)=c('key_word','CrowdEpi','Control')
+# WF_print
+WF_old=WF #for later analysis
+WF
+```
+
+#### Analysis of Log Odds Ratio
+```{r fig.height=10, fig.width=10}
+#$$\text{Log Odds Ratio }=\log_2(\frac{\frac{\text{Number of occourance per term for CrowdEpi}}{\text{Number of total words for CrowdEpi}}}{\frac{\text{Number of occourance per term for Bogus}}{\text{Number of total words for Bogus}}})$$
+par(las=2,mar=c(5,7,4,1)+.1)
+#LOR=log2(WF[,1][-length(WF)/2]/WF[,2][-length(WF)/2]*WF[,2][length(WF)/2]/WF[,1][length(WF)/2])
+WF2=WF[-length(WF)/2,]
+LOR=log2(WF2[,1]/WF2[,2]*(colSums(WF2)[2]-WF2[,2])/(colSums(WF2)[1]-WF2[,1]))
+barplot((sort(LOR,decreasing=FALSE)),horiz=TRUE,main="CrowdEpi v.s. Control")
+```
+
+#### Conditional Mosaic (Standardized)
+```{r fig.width=12,fig.height=10}
+#mosaicplot(WF2)
+library(vcd)
+WFsd=cbind(WF2[,1]/colSums(WF2)[1],WF2[,2]/colSums(WF2)[2])
+colnames(WFsd)=c('CrowdEpi','Control')
+mosaicplot(WFsd,las=3,cex.axis=1)
+```
+
+#### Correspondence Analysis
+```{r fig.height=10, fig.width=10}
+cc=function(x, printout=FALSE){
+ rsum=apply(x,1,sum)
+ csum=apply(x,2,sum)
+ n=sum(x)
+ rsum=matrix(rsum,ncol=1)
+ csum=matrix(csum,ncol=1)
+ ee=rsum %*% t(csum)/n
+ cc=(x-ee)/sqrt(ee)
+ d=svd(cc)
+ I=dim(x)[1]
+ J=dim(x)[2]
+ xs=sum((d$d^2))
+ pv=1-pchisq(xs,(I-1)*(J-1))
+ y=rbind(d$u,d$v)
+ plot(y[, 1], y[, 2], type = "n", xlab = "Correspondence Coord 1", ylab = "Correspondence Coord 2")
+ text(y[,1],y[,2],c(dimnames(x)[[1]],dimnames(x)[[2]]),col=c(rep(2,I),rep(3,J)),cex=0.75)
+ points(0,0)
+ intertia=sum((d$d[1:2]^2))/xs
+ if(printout) list(pvalue=pv,xsq=xs,inertia=intertia,rsum=rsum,csum=csum)
+}
+
+cc(WF2)
+```
+
+### 7. Comparison between new and old datasets
+#### prepare data
+```{r}
+WF_old=WF_old[ !(rownames(WF_old) %in% 'Extract'),] #remove possibly different keywords
+WF_new=WF_new[ !(rownames(WF_new) %in% c('Extract','Online','Post')),]
+oldnew=cbind(WF_old,WF_new)
+oldcrowd=oldnew[1:26,1]/sum(oldnew[1:26,1])
+oldcontrol=oldnew[1:26,2]/sum(oldnew[1:26,2])
+newcrowd=oldnew[1:26,3]/sum(oldnew[1:26,3])
+newcontrol=oldnew[1:26,4]/sum(oldnew[1:26,4])
+```
+
+<!-- #### Concordance test -->
+<!-- ```{r} -->
+<!-- library(nopaco) -->
+<!-- concordance.test(cbind(oldcrowd,newcrowd)) -->
+<!-- ``` -->
+\newpage
+#### old CrowdEpi v.s. new CrowdEpi
+##### Chi-square goodness of fit test
+```{r}
+chisq.test(oldcrowd/newcrowd)
+```
+
+##### Conditional Mosaic (Standardized)
+```{r fig.width=12,fig.height=10}
+WFsd=cbind(oldcrowd,newcrowd)
+colnames(WFsd)=c('Old','New')
+mosaicplot(WFsd,las=3,cex.axis=1)
+```
+
+\newpage
+##### old Control v.s. new Control
+##### Chi-square goodness of fit test
+```{r}
+chisq.test(oldcontrol/newcontrol)
+```
+
+##### Conditional Mosaic (Standardized)
+```{r fig.width=12,fig.height=10}
+WFsd=cbind(oldcontrol,newcontrol)
+colnames(WFsd)=c('Old','New')
+mosaicplot(WFsd,las=3,cex.axis=1)
+```

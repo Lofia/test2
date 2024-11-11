@@ -1,0 +1,122 @@
+#' @title Power of the P-test
+#' @description Compute the power of the P-test under specific settings
+#'
+#' @param setting the distribution of null and alternative
+#' @param N sample size, can be a vector
+#' @param C constant parameter, can be a vector
+#'
+#' @return power table
+#' @export
+#' @import pbapply
+#' @import stats
+#' @examples
+#' power_of_P_test('ux',c(10,20,30),c(0.2,0.3))
+power_of_P_test=function(setting='ux',N,C){
+  #if(!require("pbapply")){install.packages("pbapply");library(pbapply)}
+  op=pboptions(type="timer")
+
+  if(setting=='ux'){ # set null distribution to be U[0,1], and w(x)~x
+    Fx=function(x){return(x)}
+    info='null=U[0,1], w(x)~x'
+    null_sample=function(n){return(runif(n))}
+    alter_sample=function(n){return((runif(n))^0.5)} # inversion method: F(x)=x^2=u -> x=u^0.5
+  }
+
+
+  gamma3=function(x,err0,an,beta,n){ # use (4) to obtain omega_n_hat, and consequently estimate gamma
+    g1=1;g=Inf
+    while(abs(g1-g)>err0){
+      g=g1
+      omega_n_s=rep(NA,n)
+      omega_n_s[1]=(n+an)/(g*(1-Fx(x[1]))+beta) # H0: uniform dist F(x[1])
+      omega_n_s[2:n]=sapply(2:n,function(i){return((n-i+1)/(g*(1-Fx(x[i]))+beta))}) # i changes
+      omega_n=max(omega_n_s)/n
+      g1=1+an/n-beta*omega_n
+    }
+    return(g1)
+  }
+
+  # gamma3(x=sort(runif(20)),err0=0.001,an=0.3*sqrt(20),beta=0.3/sqrt(20),n=20)
+
+  # dyn.load('gamma3.so')
+  # gamma3_f=function(x,err0,an,beta,n){.Fortran("gamma3",x=x,err0=err0,an=an,beta=beta,n=n,g1=1)$g1}
+  # gamma3_f(x=sort(runif(20)),err0=0.001,an=0.3*sqrt(20),beta=0.3/sqrt(20),n=20)
+
+  est3=function(x,g,an,beta,i,n){ # estimate each omega
+    outs=rep(NA,n-i+1)
+    if(i>1) an=0 # no need to add an
+    if(i==n) return(list(i0=n,out=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)/n))
+    outs[1:(n-i)]=sapply(i:(n-1),function(j){return((j-i+1+an)/(g*(Fx(x[j+1])-Fx(x[i]))))}) # j changes
+    outs[n-i+1]=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)
+    outn=min(outs)
+    i0=which(outs==outn)+i-1 # i0 is the index of n1+n2+n3+...+n_i
+    ## Note: the reason of returning i0 is that: if i<k<j reaches the max(min(.)) for k,
+    ## then this couple of (i,j) also reaches the max(min(.)) for any k<=j. (The property of the greatest convex minorant.)
+    ## That's why we use i0 to record the position of the j reaching max(min(.)) for k.
+    return(list(i0=i0,out=outn/n)) # out is the estimated omega_k
+  }
+
+  pmle3=function(x,n,err0,an,beta){ # estimate each omega_hats
+    omegas=index=vector()
+    g=gamma3(x,err0,an,beta,n) # estimate gamma
+    iout=0;i=1;sum=0
+    while(i<=n){
+      iout=iout+1
+      result=est3(x,g,an,beta,i,n) # estimate omegas[k]=omega_k and index i0
+      i0=result[[1]];omegas[iout]=result[[2]]
+      sum=sum+omegas[iout]*(Fx(x[i0+1])-Fx(x[i])) # measure the appropriation of our estimation
+      index[iout]=i0 # index[i] = n1+n2+n3+...+n_i
+      i=i0+1 # continue with the next group
+      #cat('omegas:',omegas,'index:',index,'i0:',i0,'i:',i,'iout:',iout,'\n')
+    }
+    if(abs(1-sum)>1e-4) warning("1 =/= sum =",sum)
+    return(list(omegas=omegas,index=index,iout=iout))
+  }
+
+  f=function(nouse=NA,n=150,err0=0.00001,c=0.3,dist){ # function to generate test statistic for null/alternative
+    cat(info,', n=',n,', c=',c,sep='')
+    an=c*sqrt(n) # an=alpha*n, i.e., alpha=c/sqrt(n)=beta
+    beta=c/sqrt(n)
+    x=c(sort(dist(n)),1) # x[0]=0, x[n+1]=1 ###
+    result=pmle3(x,n,err0,an,beta) # estimate index[i] = n1+n2+n3+...+n_i, omegas[k]=omega_hat_k, iout=m
+    omegas=result[[1]];index=result[[2]];iout=result[[3]]
+    p=an*log(omegas[1])-beta*n*(omegas[iout]-1) # penalty term
+    rt=index[1]*log(omegas[1]) # non-penalty term
+    if(iout>1) for(i in 2:iout) rt=rt+(index[i]-index[i-1])*log(omegas[i])
+    return(p+rt)
+  }
+
+  g=function(N,C){ # function to compute critical values (1000 simulations for each setting)
+    pboptions(nout=1000) # number of independent trials
+    M=matrix(nrow=length(N),ncol=length(C))
+    cat('Computing critical values using the null distribution:\n')
+    for(i in 1:length(N)){
+      for(j in 1:length(C)){
+        M[i,j]=as.numeric(quantile(pbsapply(1:1000,f,n=N[i],c=C[j],dist=null_sample),0.95))
+      }
+    }
+    rownames(M)=N
+    colnames(M)=C
+    cat('critical values:\n')
+    print(M)
+    return(M)
+  }
+
+  g2=function(N,C){ # function to compute power (1000 simulations for each setting)
+    pboptions(nout=1000)
+    critics=g(N,C)
+    M=matrix(nrow=length(N),ncol=length(C))
+    cat('Computing powers using the alternative distribution:\n')
+    for(i in 1:length(N)){
+      for(j in 1:length(C)){
+        M[i,j]=sum(pbsapply(1:1000,f,n=N[i],c=C[j],dist=alter_sample)>critics[i,j])/1000
+      }
+    }
+    rownames(M)=N
+    colnames(M)=C
+    cat('power:\n')
+    print(M)
+    #return(M)
+  }
+  return(g2(N,C))
+}

@@ -1,0 +1,4426 @@
+---
+title: "MM"
+output: html_document
+---
+## RNG (ULTIMATE VERSION)
+```{r}
+RnG_UL=function(n,m=0,N=-Inf,rnull=rexp,bias_type='971',b=0,...){
+  if(N>0) return(NA)
+  
+  r=rnull(3*n,...)
+  u=runif(3*n)
+  
+  y=switch(bias_type,
+    '971'=(10*r+1)/(10*r+1+b)*0.8,
+    '972'=NA,
+    'linear'=NA,
+    'mary'=(10*r*(r>0)+1)/(10*r*(r>0)+1+b)*0.8+0.2,
+    NA
+  )
+  
+  r=r[u<y]
+  y=rnull(m,...)
+  return(list(x=r[1:n],y=y))
+}
+```
+
+## MM-Prep
+```{r}
+library(fdrtool) #https://github.com/cran/fdrtool
+pvt.isoMean = function(y, w)
+{
+  # Input:	y: measured values in a regression setting
+  #		w: weights
+  # Output: 	vector containing estimated (isotonic) values
+
+  n = length(y)
+
+  if(n == 1) return(y)
+  else{
+    ghat = .C("C_isomean",
+            as.double(y),
+            as.double(w),
+            as.integer(n),
+            ghat=double(n), PACKAGE="fdrtool")$ghat
+
+    return(ghat)
+  }
+}
+# /* isomean.c  (2007-07-06)
+#  *  
+#  * minor change 2024-08-20: 
+#  * use R_Calloc and R_Free rather than Calloc and Free
+#  *
+#  * Copyright 2007 Korbinian Strimmer
+#  *
+#  * ported from R code originally by Kaspar Rufibach / June 2004
+#  *
+#  * This file is part of the `fdrtool' library for R and related languages.
+#  * It is made available under the terms of the GNU General Public
+#  * License, version 2, or at your option, any later version,
+#  * incorporated herein by reference.
+#  *
+#  * This program is distributed in the hope that it will be
+#  * useful, but WITHOUT ANY WARRANTY; without even the implied
+#  * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+#  * PURPOSE.  See the GNU General Public License for more
+#  * details. 
+#  *
+#  * You should have received a copy of the GNU General Public
+#  * License along with this program; if not, write to the Free
+#  * Software Foundation, Inc., 59 Temple Place - Suite 330, Boston,
+#  * MA 02111-1307, USA 
+#  */
+# 
+# 
+# #include <R.h>
+# 
+# 
+# /* 
+#  * input:  y       measured values in a regression setting
+#  *         w       weights
+#  *         n       length of y vector (> 1)
+#  * output: ghat    vector containing estimated (isotonic) values
+#  */
+# void C_isomean(double* y, double* w, int* n, double* ghat)
+# {
+#   int c, j, nn; 
+#   double neu;
+#   double* gew;
+#   int* k;
+#   
+#   nn = *n; /* nn > 1 */
+#  
+#   /* allocate vector - error handling is done by R */
+#   k = (int *) R_Calloc((size_t) nn, int);
+#   gew = (double *) R_Calloc((size_t) nn, double);
+# 
+#   c = 0;
+#   k[c] = 0;
+#   gew[c] = w[0];
+#   ghat[c] = y[0];
+# 
+#   for (j=1; j < nn; j++)
+#   {		
+#     c = c+1;
+#     k[c] = j;
+#     gew[c] = w[j];
+#     ghat[c] = y[j];
+# 
+#     /* c is at least 1 as nn is > 1 */
+#     while (ghat[c-1] >= ghat[c])
+#     {
+#       neu = gew[c]+gew[c-1];
+#       ghat[c-1] = ghat[c-1]+(gew[c]/neu)*(ghat[c]-ghat[c-1]);
+#       gew[c-1] = neu;
+#       c = c-1;
+# 
+#       if (c==0) break;
+#     }
+#   }
+# 
+#   while (nn >= 1)
+#   {
+#     for (j=k[c]; j < nn; j++)
+#     {
+#       ghat[j] = ghat[c];
+#     }
+#     nn = k[c];
+#     c = c-1;
+#   }
+# 
+#   /* free vector */
+#   R_Free(k); 
+#   R_Free(gew); 
+# }
+```
+
+## MM
+```{r MM}
+MM=function(x,y=c(),N,setting='exp',alpha=0,epsilon=0,penalty=FALSE,auto_gcm=TRUE,auto_bisection=FALSE,direct_c=TRUE){#,alpha,beta){
+  n=length(x);m=length(y)
+  x=sort(x);y=sort(y)
+  if(alpha>0) {auto_bisection=TRUE;N=Inf;alpha=alpha*n^{-2/3}}
+  
+  if(setting=='exp'){
+    compute_theta0=function(x,y=c()){
+      x=c(x,y)
+      return(1/mean(x))
+    }
+    compute_theta_bounds=function(x) return(c(0,5/mean(x))) #?
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){ #?
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,y,theta,v){
+      xy=c(x,y)
+      p=compute_p(x,theta)
+      theta0=compute_theta0(x,y)
+      p0=compute_p(x,theta0)
+      k=epsilon*(1-sum(p))+sum(p*v) #sum(p[1:(n-1)]*v[1:(n-1)])-p[n]
+      k0=epsilon*(1-sum(p0))+sum(p0)
+      cat('p',p,'\n','p0',p0,'\n','theta0',theta0,'\n','theta',theta,'\n','v',v)
+      if(alpha>0) return(c(llf_all=sum(log(v))+(theta-theta0)*sum(-xy)+(n+m)*log(theta/theta0)-n*log(k/k0)-alpha*n*(1/k-1/k0),
+                           llf_v=sum(log(v)),
+                           llf_theta=(theta-theta0)*sum(-xy)+n*log(theta/theta0),
+                           llf_k=-n*log(k/k0),
+                           llf_penalty=-alpha*n*(1/k-1/k0))) # unknown N case
+      llf_all=sum(log(v*N/n))+(theta-theta0)*sum(-x)+n*log(theta/theta0)+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      llf_1=sum(log(v*N/n))
+      llf_1_1=sum(log(v*N/n))-n*log(N*(1-c$c)/(N-n))
+      llf_1_2=n*log(N*(1-c$c)/(N-n))
+      llf_2=(theta-theta0)*sum(-x)
+      llf_3=n*log(theta/theta0)
+      llf_4=(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(c(llf_all=llf_all,llf_1=llf_1,llf_1_1=llf_1_1,llf_1_2=llf_1_2,llf_2=llf_2,llf_3=llf_3,llf_4=llf_4)) ###### changeable
+    }
+  }
+  else if(setting=='half_norm'){
+    compute_theta0=function(x) return(-1/2/mean(x^2)) # MLE under null
+    compute_theta_bounds=function(x) return(c(-5/2/mean(x^2),0))
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      sigma=sqrt(-0.5/theta)
+      Fx=pnorm(x,sd=sigma)*2-1
+      return(diff(Fx))
+    }
+    compute_dp=function(x,theta){
+      dF=-2*x*dnorm(sqrt(-2*theta)*x)/sqrt(-2*theta)
+      dF=c(dF,0)
+      return(dF[2:(n+1)]-dF[1:n])
+      # library(numDeriv)
+      # f = function(theta) 2*pnorm(sqrt(-2*theta)*x[1])-1
+      # grad(f,-1)
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta/2-sum(x^2)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      theta0=compute_theta0(x)
+      p0=compute_p(x,theta0)
+      llf_all=sum(log(v*N/n))+(theta-theta0)*sum(x^2)+n/2*log(theta/theta0)+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      llf_1=sum(log(v*N/n))
+      # llf_1_1=sum(log(v*N/n))-n*log(N*(1-c$c)/(N-n))
+      # llf_1_2=n*log(N*(1-c$c)/(N-n))
+      llf_2=(theta-theta0)*sum(x^2)
+      llf_3=n/2*log(theta/theta0)
+      llf_4=(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(c(llf_all=llf_all,llf_1=llf_1,llf_2=llf_2,llf_3=llf_3,llf_4=llf_4)) ###### changeable llf_1_1=llf_1_1,llf_1_2=llf_1_2,
+    }
+  }
+  else if(setting=='norm'){
+    auto_bisection=TRUE
+    compute_theta0=function(x,y=c()){
+      x=c(x,y)
+      mu=mean(x)
+      sigma2=var(x)*(n-1)/n
+      return(c(-0.5/sigma2,mu/sigma2)) # MLE under null
+    }
+    # L_bound=c(-Inf,-Inf);R_bound=c(0,Inf)
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      mu=-theta[2]/2/theta[1]
+      sigma=sqrt(-0.5/theta[1])
+      Fx=pnorm(x,mean=mu,sd=sigma)
+      return(diff(Fx))
+    }
+    compute_llf=function(x,y,theta,v){
+      xy=c(x,y)
+      p=compute_p(x,theta)
+      theta0=compute_theta0(x,y)
+      p0=compute_p(x,theta0)
+      k=epsilon*(1-sum(p))+sum(p*v) #sum(p[1:(n-1)]*v[1:(n-1)])-p[n]
+      k0=epsilon*(1-sum(p0))+sum(p0)
+      # cat('p',p,'\n','p0',p0,'\n','theta0',theta0,'\n','theta',theta,'\n','v',v)
+      if(alpha>0) return(c(llf_all=sum(log(v))+(theta[1]-theta0[1])*sum(xy^2)+(theta[2]-theta0[2])*sum(xy)+(n+m)/4*(theta[2]^2/theta[1]-theta0[2]^2/theta0[1])+(n+m)/2*log(theta[1]/theta0[1])-n*log(k/k0)-alpha*n*(1/k-1/k0),
+                           llf_v=sum(log(v)),
+                           llf_theta=(theta[1]-theta0[1])*sum(xy^2)+(theta[2]-theta0[2])*sum(xy)+(n+m)/4*(theta[2]^2/theta[1]-theta0[2]^2/theta0[1])+(n+m)/2*log(theta[1]/theta0[1]),
+                           llf_k=-n*log(k/k0),
+                           llf_penalty=-alpha*n*(1/k-1/k0))) # unknown N case
+      llf_all=sum(log(v*N/n))+(theta[1]-theta0[1])*sum(x^2)+(theta[2]-theta0[2])*sum(x)+n/4*(theta[2]^2/theta[1]-theta0[2]^2/theta0[1])+n/2*log(theta[1]/theta0[1])+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      llf_1=sum(log(v*N/n))
+      llf_2=(theta[1]-theta0[1])*sum(x^2)+(theta[2]-theta0[2])*sum(x)
+      llf_3=n/4*(theta[2]^2/theta[1]-theta0[2]^2/theta0[1])+n/2*log(theta[1]/theta0[1])
+      llf_4=(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(c(llf_all=llf_all,llf_1=llf_1,llf_2=llf_2,llf_3=llf_3,llf_4=llf_4))
+    }
+  }
+  else if(setting=='gamma'){
+    auto_bisection=TRUE
+    compute_theta0=function(x,y=c()){
+      x=c(x,y)
+      beta=mean(x)/var(x)*n/(n-1)
+      alpha=beta*mean(x)
+      return(c(alpha,beta)) # MLE under null
+    }
+    # L_bound=c(-Inf,-Inf);R_bound=c(0,Inf)
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      Fx=pgamma(x,theta[1],theta[2])
+      return(diff(Fx))
+    }
+    compute_llf=function(x,y,theta,v){
+      xy=c(x,y)
+      if(sum(theta<1e-9)) theta[theta<1e-9]=1e-9
+      p=compute_p(x,theta)
+      theta0=compute_theta0(x,y)
+      p0=compute_p(x,theta0)
+      k=epsilon*(1-sum(p))+sum(p*v) #sum(p[1:(n-1)]*v[1:(n-1)])-p[n]
+      k0=epsilon*(1-sum(p0))+sum(p0)
+      # cat('p',p,'\n','p0',p0,'\n','theta0',theta0,'\n','theta',theta,'\n','v',v)
+      if(alpha>0) return(llf_all=sum(log(v))+(theta[1]-theta0[1])*sum(log(xy))+(theta[2]-theta0[2])*sum(-xy)+(n+m)*(theta[1]*log(theta[2])-log(gamma(theta[1]))-theta0[1]*log(theta0[2])+log(gamma(theta0[1])))-n*log(k/k0)-alpha*n*(1/k-1/k0)) # unknown N case
+      llf_all=sum(log(v*N/n))+(theta[1]-theta0[1])*sum(log(x))+(theta[2]-theta0[2])*sum(-x)+n*(theta[1]*log(theta[2])-log(gamma(theta[1]))-theta0[1]*log(theta0[2])+log(gamma(theta0[1])))+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      llf_1=sum(log(v*N/n))
+      llf_2=(theta[1]-theta0[1])*sum(log(x))+(theta[2]-theta0[2])*sum(-x)
+      llf_3=n*(theta[1]*log(theta[2])-log(gamma(theta[1]))-theta0[1]*log(theta0[2])+log(gamma(theta0[1])))
+      llf_4=(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(c(llf_all=llf_all,llf_1=llf_1,llf_2=llf_2,llf_3=llf_3,llf_4=llf_4))
+    }
+  }
+  
+  ####################################
+  ####################################
+  
+  # pava=function(dx,dy){
+  #   n=length(dx)
+  #   slopes=dy/dx
+  #   index=1:n
+  #   j=n
+  #   for(j in (n-1):1){
+  #     while(slopes[j+1]<slopes[j]){
+  #       dx[j]=dx[j+1]+dx[j];dx=dx[-(j+1)]
+  #       dy[j]=dy[j+1]+dy[j];dy=dy[-(j+1)]
+  #       slopes[(j)]=dy[j]/dx[j];slopes=slopes[-(j+1)]
+  #       index=index[-(j+1)]
+  #       if(length(index)==j) break
+  #     }
+  #   }
+  #   return(rep(slopes,diff(c(index,n+1))))
+  # }
+  # pava_gcmlcm=function(dx,dy){
+  #   u=gcmlcm(cumsum(c(0,dx)),cumsum(c(0,dy)))
+  #   index=diff(match(u$x.knots,cumsum(c(0,dx)))-1)
+  #   return(rep(u$slope.knots,index))
+  # } 
+  # t1=Sys.time()
+  # for(i in 1:1000) a=pava_gcmlcm(runif(1000),runif(1000))
+  # t2=Sys.time()
+  # t2-t1
+  # 
+  # t1=Sys.time()
+  # for(i in 1:1000) pava(runif(10000),runif(10000))
+  # t2=Sys.time()
+  # t2-t1 
+  # 
+  # t1=Sys.time()
+  # for(i in 1:1000) dx=runif(1000);dy=runif(1000);a=pvt.isoMean(dy/dx,dx)
+  # t2=Sys.time()
+  # t2-t1 
+  
+  if(auto_gcm && direct_c){
+    # library(fdrtool)
+    est=function(c,theta){ #careful with ties
+      a=rep(1,n)#;a[1]=a[1]+n*alpha
+      b=(N-n)/(1-c)*p;  b[n]=b[n]+penalty*(N-n)/(1-c)*2/sqrt(n) # penalty added
+      if(alpha>0) b=(c-alpha)/c^2*n*p
+      
+      aa=diff(c(which(b>0),n+1)) # a without ties
+      bb=b[b>0] # b without ties
+      # u=gcmlcm(cumsum(c(0,bb)),cumsum(c(0,aa)))
+      # index=diff(match(u$x.knots,cumsum(c(0,bb)))-1)
+      # vv=rep(u$slope.knots,index)
+      vv=pvt.isoMean(aa/bb,bb)
+      v=rep(vv,aa)
+      v=sapply(v,min,1)
+      if(alpha>0) v=sapply(v,max,epsilon)
+      return(list(v=v))#,v_tilde=u$slope.knots,index=index)) ###### shortenable
+    }
+  }
+  else if(auto_gcm && !direct_c){
+    library(fdrtool)
+    est=function(c,theta){ #careful with ties
+      a=rep(1,n)#;a[1]=a[1]+n*alpha
+      b=(N-n)/(1-c)*p;  b[n]=b[n]+penalty*(N-n)/(1-c)*2/sqrt(n) # penalty added
+      if(alpha>0) b=(c-alpha)/c^2*n*p
+      
+      aa=diff(c(which(b>0),n+1)) # a without ties
+      bb=b[b>0] # b without ties
+      u=gcmlcm(cumsum(c(0,bb)),cumsum(c(0,aa)))
+      index=diff(match(u$x.knots,cumsum(c(0,bb)))-1)
+      vv=rep(u$slope.knots,index)
+      # vv=pvt.isoMean(aa/bb,bb)
+      v=rep(vv,aa)
+      v=sapply(v,min,1)
+      if(alpha>0) v=sapply(v,max,epsilon)
+      return(list(v=v))#,v_tilde=u$slope.knots,index=index)) ###### shortenable
+    }
+  }
+  else{
+    est=function(c,theta){
+      a=rep(1,n)#;a[1]=a[1]+n*alpha
+      b=(N-n)/(1-c)*p;  b[n]=b[n]+penalty*(N-n)/(1-c)*2/sqrt(n) # penalty added
+      if(alpha>0) b=(c-alpha)/c^2*n*p
+      
+      M=matrix(nrow=n,ncol=n)
+      for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+      
+      v=rep(Inf,n)
+      v[1]=min(M[1,]);v[n]=max(M[,n])
+      for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+      # cat(sum(p*v))
+      # cat('\n')
+      v=sapply(v,min,1)
+      if(alpha>0) v=sapply(v,max,epsilon)
+      return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+    }
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-epsilon*(1-sum(p))-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=compute_theta0(x,y)
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  
+  ####################################
+  ####################################
+  
+  loop=1
+  repeat{
+    # theta0=c(0.6,0.006)
+    p=compute_p(x,theta0)
+    
+    # cat('\n','theta0 =',theta0,'\n')
+    c=bisection_c(alpha+0.001,1,theta0)
+    h=0
+    while(N==Inf & h<10){
+      h=h+1
+      c2=bisection_c(c$c,1,theta0)
+      if(c$c-c2$c<1e-4) h=999
+      c=c2
+    }
+    if(h>0 & h<999) warning('c iter error')
+    
+    v=est(c$c,theta0)#;v$v=rep(0.8,n)
+    # cat(loop,'\n',
+    #     'c:',c$c,c$iter,c$fmid,'\n',
+    #     'v:',v$v_tilde,v$index,'\n')
+    if(auto_bisection){
+      if(length(theta0)>1){
+        out=optim(theta0,function(u)
+          return(compute_llf(x,y,u,v$v)[1]),control=list(fnscale=-1),gr=NULL)
+        # cat('\n out')
+        theta=list(theta=out$par,iter=out$value,fmid=out$convergence)
+      }
+      else if(length(theta0)==1){
+        out=optimize(function(u)
+          return(compute_llf(x,y,u,v$v)[1]),c(1e-2,1e4),maximum=TRUE)
+        # cat('\n out')
+        theta=list(theta=out$maximum,iter=out$objective,fmid=NULL)
+      }
+      else stop('ERROR_AUTO_BISECTION')
+    }
+    else{
+      bounds=compute_theta_bounds(x)
+      theta=bisection_theta(bounds[1],bounds[2],v$v)
+    }
+    
+    llf=compute_llf(x,y,theta$theta,v$v)
+    
+    # cat(loop,'\n',
+    #     'c:',c$c,c$iter,c$fmid,'\n',
+    #     'v:',v$v,'\n',#'(',v$index,')',
+    #     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #     #'llf0:',llf0,'\n',
+    #     'llf:',llf,sum(p*v$v),'\n')
+    
+    if(sum(abs(theta$theta-theta0))<0.001){
+      if(setting=='norm') {
+        theta=theta$theta
+        mu=-theta[2]/2/theta[1]
+        sigma=sqrt(-0.5/theta[1])
+        return(list(v=v$v,theta=c(mu,sigma),llf=llf,c=c$c,loop=loop))
+        }
+      return(list(v=v$v,theta=theta$theta,llf=llf,c=c$c,loop=loop))
+    } 
+    #_tilde,index=v$index
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+```
+
+## NPMLE
+```{r}
+NPMLE=function(x,setting='uniform',para=NULL,c=0.3){
+  x=sort(x)
+  n=length(x)
+  # op=pboptions(type="timer")
+  
+  if(setting=='uniform'){
+    Fx=function(x){return(x)}
+    info='null=U[0,1]'
+    null_sample=function(n){return(runif(n))}
+  }
+  else if(setting=='exp'){
+    Fx=function(x){return(1-exp(-para*x))}
+    info=paste0('null=exp(',round(para,3),')')
+    # null_sample=function(n){return(runif(n))}
+  }
+  else if(setting=='norm'){
+    Fx=function(x){return(pnorm(x,para[1],para[2]))}
+    info=paste0('null=norm(',round(para[1],3),'sd=',round(para[2],3),')')
+    # null_sample=function(n){return(runif(n))}
+  }
+
+  gamma3=function(x,err0,an,beta,n){ # use (4) to obtain omega_n_hat, and consequently estimate gamma
+    g1=1;g=Inf
+    while(abs(g1-g)>err0){
+      g=g1
+      omega_n_s=rep(NA,n)
+      omega_n_s[1]=(n+an)/(g*(1-Fx(x[1]))+beta) # H0: uniform dist F(x[1])
+      omega_n_s[2:n]=sapply(2:n,function(i){return((n-i+1)/(g*(1-Fx(x[i]))+beta))}) # i changes
+      omega_n=max(omega_n_s)/n
+      g1=1+an/n-beta*omega_n
+    }
+    return(g1)
+  }
+
+  est3=function(x,g,an,beta,i,n){ # estimate each omega
+    outs=rep(NA,n-i+1)
+    if(i>1) an=0 # no need to add an
+    if(i==n) return(list(i0=n,out=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)/n))
+    outs[1:(n-i)]=sapply(i:(n-1),function(j){return((j-i+1+an)/(g*(Fx(x[j+1])-Fx(x[i]))))}) # j changes
+    outs[n-i+1]=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)
+    outn=min(outs)
+    i0=which(outs==outn)+i-1 # i0 is the index of n1+n2+n3+...+n_i
+    ## Note: the reason of returning i0 is that: if i<k<j reaches the max(min(.)) for k,
+    ## then this couple of (i,j) also reaches the max(min(.)) for any k<=j. (The property of the greatest convex minorant.)
+    ## That's why we use i0 to record the position of the j reaching max(min(.)) for k.
+    return(list(i0=i0,out=outn/n)) # out is the estimated omega_k
+  }
+
+  pmle3=function(x,n,err0,an,beta){ # estimate each omega_hats
+    omegas=index=vector()
+    g=gamma3(x,err0,an,beta,n) # estimate gamma
+    iout=0;i=1;sum=0
+    while(i<=n){
+      iout=iout+1
+      result=est3(x,g,an,beta,i,n) # estimate omegas[k]=omega_k and index i0
+      i0=result[[1]];omegas[iout]=result[[2]]
+      sum=sum+omegas[iout]*(Fx(x[i0+1])-Fx(x[i])) # measure the appropriation of our estimation
+      index[iout]=i0 # index[i] = n1+n2+n3+...+n_i
+      i=i0+1 # continue with the next group
+      #cat('omegas:',omegas,'index:',index,'i0:',i0,'i:',i,'iout:',iout,'\n')
+    }
+    if(abs(1-sum)>1e-4) warning("1 =/= sum =",sum)
+    return(list(omegas=omegas,index=index,iout=iout))
+  }
+  
+  x=c(x,1)
+  an=c*sqrt(n) # an=alpha*n, i.e., alpha=c/sqrt(n)=beta
+  beta=c/sqrt(n)
+  result=pmle3(x,n,err0=1e-5,an,beta) # estimate index[i] = n1+n2+n3+...+n_i, omegas[k]=omega_hat_k, iout=m
+  omegas=result[[1]];index=result[[2]];iout=result[[3]]
+  p=an*log(omegas[1])-beta*n*(omegas[iout]-1) # penalty term
+  rt=index[1]*log(omegas[1]) # non-penalty term
+  if(iout>1) for(i in 2:iout) rt=rt+(index[i]-index[i-1])*log(omegas[i])
+  return(list(omegas=omegas,index=index,iout=iout,llf=p+rt))
+}
+```
+
+# Powers of NPMLE+MM / MM / Spline / KS / AD
+```{r}
+M=5000;M2=5000
+bb=4
+# bb=seq(0,0,1)
+n=c(100)
+# alpha=c(0.5,1,2,5)
+alpha=c(0.7) #exp-0.7;gamma-0.3
+epsilon=c(0.1,0.2,0.3,0.4,0.5) #0.2
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+betas_MM=betas
+betas_spline=betas
+betas_KS=betas
+betas_AD=betas
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n')
+      
+      ts=Sys.time()
+      simus=foreach(ii=1:M2,.combine='rbind',.options.snow=opts2,.packages=c('fdrtool','MASS','splines2','coneproj','DescTools')) %dopar% {
+        x=RnG_UL(n=n[j],m=ceiling((n[j])^(2/3)),rnull=rexp,bias_type='971',b=0) ##
+        u=MM(x$x,x$y,setting='exp',alpha=alpha[k],epsilon=epsilon[l]) ##
+        o1=u$llf
+        o2=NPMLE(x$x,setting='exp',para=u$theta)$llf[1] ##
+        # o3=mle_bias(x=x$x,y=x$y,sp=c(-4.5,4.5),minp=0.2)$llr ##
+        o3=0
+    return(c(o1,o2,o3))
+      }
+      te=Sys.time()
+      message(' ',format(round(te-ts,2)))
+
+      cri=apply(simus,2,quantile,probs=0.95)
+
+      for(i in 1:length(bb)){
+        
+        ts=Sys.time()
+        llr=foreach(ii=1:M,.combine='rbind',.options.snow=opts,.packages=c('fdrtool','MASS','splines2','coneproj','DescTools'),.errorhandling='remove') %dopar% {
+          x=RnG_UL(n=n[j],m=ceiling((n[j])^(2/3)),rnull=rexp,bias_type='971',b=bb[i]) ##
+          u=MM(x$x,x$y,setting='exp',alpha=alpha[k],epsilon=epsilon[l]) ##
+          o1=u$llf
+          o2=NPMLE(x$x,setting='exp',para=u$theta)$llf[1] ##
+          # o3=tryCatch(mle_bias(x=x$x,y=x$y,sp=c(-4.5,4.5),minp=0.2)$llr,
+          #             error=function(msg){return(-Inf)}) ##
+          o3=0
+          # o4=ifelse(ks.test(x$x,pexp)$p.value<0.05,1,0)
+          o4=0
+          # o5=ifelse(AndersonDarlingTest(x$x,'pexp')$p.value<0.05,1,0)
+          o5=0
+          return(c(o1,o2,o3,o4,o5))
+        }
+        te=Sys.time()
+        message(' ',format(round(te-ts,2)))
+        
+        M_remain=nrow(llr)
+        print(M_remain)
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,6]>cri[6])/M_remain
+        betas_MM[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,1]>cri[1])/M_remain
+        betas_spline[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,7]>cri[7])/M_remain
+        betas_KS[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,8])/M_remain
+        betas_AD[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,9])/M_remain
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb)
+stopCluster(cl)
+
+l=list(MM_NPMLE=betas,MM=betas_MM,Spline=betas_spline,KS=betas_KS,AD=betas_AD)
+save(l,file="MM_MM+NPMLE_power_m=n^(2-3)_exp_971_n=100_vary-epsilon_M=5e3.Rda")
+```
+## Write LaTex table
+```{r}
+l1=do.call(cbind,l[1:3])
+l2=do.call(cbind,l)
+ll=cbind(l1,l2)
+save(ll,file='simu_exp.Rda')
+library("xtable")
+print(xtable(ll,type="latex",digits=3),file="ll_exp.tex")
+```
+
+## GGplot (power - vary methods)
+```{r fig.width=4, fig.height=2}
+# load("simu_norm.Rda")
+library(ggplot2)
+
+data2<-expand.grid(method=factor(c("MM 1","MM+NPMLE 1","Spline 1","MM 2","MM+NPMLE 2","Spline 2","K-S","A-D"),levels=c("MM 1", "MM+NPMLE 1", "Spline 1", "MM 2","MM+NPMLE 2", "Spline 2","K-S","A-D")),n=c(20,50,100,300))
+data2$power<-as.vector(t(ll))
+
+plot2 <- ggplot(data2, aes(x=n, y=power, group=method, color=method, linetype=method)) +
+  geom_line() +
+  geom_point(show.legend = FALSE) +
+  labs(title="", x="Sample Size (n)", y="Power", color="Methods", linetype="Methods") +
+  theme_minimal() +
+  ylim(0.1, 1.0) +
+  scale_x_continuous(breaks = c(20, 50, 100, 300)) +
+  scale_color_manual(values=c("MM 1"="#1f78b4", "MM 2"="#1f78b4", 
+                              "MM+NPMLE 1"="#33a02c", "MM+NPMLE 2"="#33a02c", 
+                              "Spline 1"="#e31a1c", "Spline 2"="#e31a1c", 
+                              "K-S"="#ff7f00", "A-D"="#6a3d9a")) +
+  scale_linetype_manual(values=c("MM 1"="solid", "MM 2"="dashed", 
+                                 "MM+NPMLE 1"="solid", "MM+NPMLE 2"="dashed", 
+                                 "Spline 1"="solid", "Spline 2"="dashed", 
+                                 "K-S"="solid", "A-D"="solid")) +
+  theme(panel.border=element_rect(color="black", fill=NA, size=1),
+        legend.position = "top")  # Move legend to top
+
+
+plot2
+
+# ggsave("plot2.png",plot=plot2,width=720,height=500,units="px")
+
+```
+
+## GGplot (power - vary parameters)
+```{r fig.width=4, fig.height=2}
+load("MM_MM+NPMLE_power_m=n^(2-3)_exp_971_n=100_vary-alpha_M=5e3.Rda")
+
+library(ggplot2)
+
+data2<-expand.grid(alpha=factor(c("0.3","0.5","0.7","1","2"),levels=c("0.3","0.5","0.7","1","2")),method=c('MM','MM+NPMLE'))
+data2$power<-unlist(l[2:1])
+plot2<-ggplot(data2,aes(x=alpha,y=power,group=method,color=factor(method)))+
+  geom_line()+
+  geom_point()+
+  labs(title="",x="alpha",y="Power",color="method")+
+  theme_minimal()+
+  ylim(0.5,0.7)+
+  scale_color_manual(values=c("MM"="#a6cee3","MM+NPMLE"="#08519c"))+
+  theme(panel.border=element_rect(color="black",fill=NA,size=1))  # Add solid black border
+
+
+plot2
+
+# ggsave("plot2.png",plot=plot2,width=720,height=500,units="px")
+
+load("MM_MM+NPMLE_power_m=n^(2-3)_exp_971_n=100_vary-epsilon_M=5e3.Rda")
+
+library(ggplot2)
+
+data2<-expand.grid(epsilon=factor(c("0.1","0.2","0.3","0.4","0.5"),levels=c("0.1","0.2","0.3","0.4","0.5")),method=c('MM','MM+NPMLE'))
+data2$power<-unlist(l[2:1])
+plot2<-ggplot(data2,aes(x=epsilon,y=power,group=method,color=factor(method)))+
+  geom_line()+
+  geom_point()+
+  labs(title="",x="epsilon",y="Power",color="method")+
+  theme_minimal()+
+  ylim(0.5,0.7)+
+  scale_color_manual(values=c("MM"="#a6cee3","MM+NPMLE"="#08519c"))+
+  theme(panel.border=element_rect(color="black",fill=NA,size=1))  # Add solid black border
+
+
+plot2
+
+```
+
+## summary stats of Lambda under NPMLE(+MM)/MM/Spline
+```{r}
+M=1e3
+n=seq(100,7000,100)
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+summary_stats=list(MM_NPMLE=list(all=matrix(nrow=0,ncol=7),
+                                 v=matrix(nrow=0,ncol=7),
+                                 theta=matrix(nrow=0,ncol=7),
+                                 k=matrix(nrow=0,ncol=7),
+                                 penalty=matrix(nrow=0,ncol=7))
+                   ,MM=matrix(nrow=0,ncol=7),
+                   Spline=matrix(nrow=0,ncol=7))
+# summary_stats_MM_NPMLE=matrix(nrow=0,ncol=7)
+# summary_stats_MM=matrix(nrow=0,ncol=7)
+# summary_stats_Spline=matrix(nrow=0,ncol=7)
+# load("~/1selection_bias_MM/summary_stats_NPMLE+MM_exp_n=100~6000_M=1e4.Rda")
+t1=Sys.time()
+for(i in 1:length(n)){
+  ts=Sys.time()
+  simus=foreach(ii=1:M,.combine='rbind',.options.snow=opts,.packages=c('fdrtool','MASS','splines2','coneproj')) %dopar% {
+    x=RnG_UL(n=n[i],m=ceiling((n[i])^(3/4)+200),rnull=rnorm,bias_type='971',b=0,sd=1) ##
+    u=MM(x$x,x$y,setting='norm',alpha=0.3,epsilon=0.2) ##
+    o1=u$llf
+    o2=NPMLE(x$x,setting='norm',para=u$theta)$llf[1] ##
+    o3=mle_bias(x=x$x,y=x$y,sp=c(-4.5,4.5),minp=0.2)$llr ##
+    return(c(o1,o2,o3))
+    }
+  te=Sys.time()
+  message(' ',format(round(te-ts,2)),' n = ',n[i])
+  
+  for(ii in 1:5) summary_stats$MM_NPMLE[[ii]]=rbind(summary_stats$MM_NPMLE[[ii]],c(summary(simus[,ii]),'95% Qu.'=quantile(simus[,ii],0.95)))
+  summary_stats$MM=rbind(summary_stats$MM,c(summary(simus[,6]),'95% Qu.'=quantile(simus[,6],0.95)))
+  summary_stats$Spline=rbind(summary_stats$Spline,c(summary(simus[,7]),'95% Qu.'=quantile(simus[,7],0.95)))
+}
+t2=Sys.time()
+message(' ',format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+save(summary_stats,file='summary_stats_3_m=n^(3-4)+200_norm_n=100~7000_M=1e3_a=03.Rda')
+```
+
+## GGplot (stability)
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+plot_summary_stats_ggplot <- function(M, n = seq(100, 7000, 100)) {
+  # Convert M matrix to a data frame, add sample size, and set column names
+  M_df <- as.data.frame(M)
+  M_df$n <- n
+  colnames(M_df) <- c("min", "25th", "median", "mean", "75th", "max", "95th", "n")
+  
+  # Remove the "max" column
+  M_df <- M_df %>% select(-max)
+
+  # Reshape data to long format for ggplot
+  M_long <- M_df %>%
+    pivot_longer(cols = -n, names_to = "statistic", values_to = "value")
+
+  # Create ggplot with thinner lines and simple dot points for each summary statistic
+  ggplot(M_long, aes(x = n, y = value, color = statistic, group = statistic)) +
+    geom_line(size = 0.5) +  # Thinner lines
+    geom_point(size = 1) +  # Small dots for points
+    scale_color_manual(values = c("min" = "#a6cee3", "25th" = "#1f78b4", "median" = "#08519c", "mean" = "dark green", "75th" = "#041d7a", "95th" = "red")) +  # Define colors
+    ylim(c(min(M), 6)) +  # Set y-axis limits to max 6
+    labs(x = "Sample size n", y = "Value of key summary statistics", color = "Statistic") +
+    theme_minimal()+
+    theme(panel.border=element_rect(color="black",fill=NA,size=1)) 
+}
+
+
+load("~/1selection_bias_MM/summary_stats_NPMLE+MM_m=n^(1-2)_exp_n=100~7000_M=1e3.Rda")
+plot_summary_stats_ggplot(summary_stats)
+
+```
+
+
+## some plots for NPMLE+MM
+```{r}
+load('summary_stats_NPMLE+MM_m=n^(1-2)_exp_n=100~7000_M=1e3.Rda')
+mark=c('1','2','3','m','4','5','c')
+n=seq(100,7000,100)
+# l=lm(log(summary_stats[,7])~log(n))
+# summary(l)
+plot(1,type="n",xlim=c(0,7100),ylim=c(0,15))
+for(i in 1:7){
+  points(n,summary_stats[,i],col="dark red",pch=mark[i])
+}
+# plot(1,type="n",xlim=c(0,7100),ylim=c(0,2))
+# for(i in 1:7){
+#   points(n,summary_stats[,i]/n^(1/3),col="dark red",pch=mark[i])
+# }
+# plot(1,type="n",xlim=c(0,7100),ylim=c(0,.2))
+# for(i in 1:7){
+#   points(n,summary_stats[,i]/n^(1/3)/log(n),col="dark red",pch=mark[i])
+# }
+# plot(1,type="n",xlim=c(0,7100),ylim=c(0,.5))
+# for(i in 1:7){
+#   points(n,summary_stats[,i]/n^(1/2),col="dark red",pch=mark[i])
+# }
+```
+
+## some plots for NPMLE
+```{r}
+load('summary_stats_NPMLE_exp_n=100~7000_M=1e4.Rda')
+mark=c('1','2','3','m','4','5','c')
+n=seq(100,7000,100)
+plot(1,type="n",xlim=c(0,7100),ylim=c(0,15))
+for(i in 1:7){
+  points(n,summary_stats[,i],col="dark red",pch=mark[i])
+}
+```
+
+## some plots for NPMLE+se with Y's
+```{r}
+load('summary_stats_NPMLE+se_2m=n_exp_n=100~7000_M=1e4.Rda')
+mark=c('1','2','3','m','4','5','c')
+n=seq(100,7000,100)
+plot(1,type="n",xlim=c(0,7100),ylim=c(0,25))
+for(i in 1:7){
+  points(n,summary_stats[,i],col="dark red",pch=mark[i])
+}
+```
+
+## null dist theoretically
+```{r}
+library(e1071)
+library(fdrtool)
+library(pbapply)
+re=pbsapply(1:1e4,function(nouse){
+  freq=1e4
+  x=seq(0,1,1/freq)
+  bridge=c(0,rbridge(1,freq))
+  y=bridge-(1-x)*1^2* # ??? log(1-x)
+  A_tilde=gcmlcm(x,y,type=c("gcm"))
+  target=0.5*sum(A_tilde$slope.knots^2*diff(A_tilde$x.knots))
+  return(target)
+})
+plot(density(re),main='Theoretical Density')
+save(re,file='theoretical_dist.Rda')
+```
+
+## Comparison
+```{r}
+plot(density(re),main='Density Curves',col='blue',ylim=c(0,0.4))
+lines(density(re2),col='red')
+legend('topright',legend=c('theoretical dist','real dist'),lty=1,col=c('blue','red'))
+```
+
+## RNG (exp)
+```{r}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)*0.8+0.2){   #####
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+RnG_97_1_un_N=function(n,m=0,b=0,theta=1){
+  r=rexp(3*n,theta)
+  u=runif(3*n)
+  r=r[u<(10*r+1)/(10*r+1+b)*0.8]
+  y=rexp(m,theta)
+  return(list(x=r[1:n],y=y))
+}
+
+RnG_97_2_un_N=function(n,b=0,theta=1){
+  r=rexp(3*n,theta)
+  u=runif(3*n)
+  e=exp(1)
+  r=r[u<(e^r+1)/(e^r+1+b)]
+  return(list(x=r[1:n]))
+}
+
+RnG_linear_un_N=function(n,b=0,theta=1){
+  r=rexp(3*n,theta)
+  u=runif(3*n)
+  r=r[u<r*(r>0)*b/10+0.5]
+  return(list(x=r[1:n]))
+}
+
+x=RnG_linear_un_N(10000,b=2)
+MM(sort(x$x),alpha=0.7,epsilon=0.5)
+# library(pbapply)
+# aa=pbsapply(1:1000000,function(nouse){a=RnG_97_1(100,b=5);if(is.na(a[100])){return(1)};return(0)})
+
+x=RnG_97_1_un_N(10000,b=0)
+# y=rexp(100)
+MM(x$x,alpha=0.7,epsilon=0.2)
+
+
+t1=Sys.time();MM(sort(x$x),alpha=0.7,epsilon=0.2);t2=Sys.time();message(format(round(t2-t1,2)))
+
+t1=Sys.time();MM(sort(x$x),auto_gcm=FALSE,alpha=0.7,epsilon=0.2);t2=Sys.time();message(format(round(t2-t1,2)))
+```
+
+## RNG (half-norm)
+```{r}
+RnG_97_1_half_norm=function(n,b=0,sigma=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=abs(rnorm(1,0,sigma))
+    if(runif(1)<(10*r+1)/(10*r+1+b)*0.8){   #####
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+```
+
+<!-- r=seq(0,5,by=0.2) -->
+<!-- bfun=function(r,b){10*r+1)/(10*r+1+b)*0.8+0.2} -->
+<!-- ?png -->
+<!-- png("test1.png") -->
+<!-- matplot(r,cbind(bfun(r,b=0),bfun(r,b=1),bfun(r,b=5),bfun(r,b=10),bfun(r,b=20)),type="l",col=1:5,lty=1:5,lwd=2,ylab="f(r)") -->
+<!-- title("Bias f(r)=(10*r+1)/(10*r+1+2)*0.8+0.2") -->
+<!-- legend(2, 0.5, c("b=0","b=1","b=5","b=10","b=20"),  col = 1:5,lty=1:5,lwd=2) -->
+
+## RNG (gamma)
+```{r}
+RnG_97_1_gamma=function(n,b=0,shape=1,rate=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rgamma(1,shape,rate)
+    if(runif(1)<(10*r+1)/(10*r+1+b)*0.8+0.2){   #####
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+RnG_97_1_gamma_un_N=function(n,m=0,b=0,shape=1,rate=1){
+  y=rgamma(m,shape,rate)
+  r=rgamma(3*n,shape,rate)
+  u=runif(3*n)
+  r=r[u<(10*r+1)/(10*r+1+b)*0.8+0.2]
+  return(list(x=r[1:n],y=y))
+}
+
+RnG_97_2_gamma_un_N=function(n,b=0,shape=1,rate=1){
+  r=rgamma(3*n,shape,rate)
+  u=runif(3*n)
+  r=r[u<(exp(r)+1)/(exp(r)+1+b)]
+  return(list(x=r[1:n]))
+}
+
+RnG_linear_gamma_un_N=function(n,m=0,b=0,shape=1,rate=1){
+  y=rgamma(m,shape,rate)
+  r=rgamma(3*n,shape,rate)
+  u=runif(3*n)
+  r=r[u<r*(r>0)*b/10+0.5]
+  return(list(x=r[1:n],y=y))
+}
+
+x=RnG_97_1_gamma_un_N(200,b=4)
+MM(sort(x$x),setting='gamma',alpha=0.5,epsilon=0.2)
+
+x=RnG_97_1_norm_un_N(200,b=0)
+MM(sort(x$x),setting='norm',alpha=0.3,epsilon=0.2)
+
+x=RnG_97_1_un_N(200,b=0)
+MM(sort(x$x),alpha=0.3,epsilon=0.2)
+```
+
+## RNG (norm)
+```{r}
+RnG_97_1_norm=function(n,b=0,mu=0,sigma=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rnorm(1,mu,sigma)
+    if(runif(1)<(10*max(r,0)+1)/(10*max(r,0)+1+b)*0.8+0.2){   #####
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+
+RnG_97_1_norm_un_N=function(n,b=0,mu=0,sigma=1){
+  r=rnorm(3*n,mu,sigma)
+  u=runif(3*n)
+  r=r[u<(10*r*(r>0)+1)/(10*r*(r>0)+1+b)*0.8+0.2]
+  return(list(x=r[1:n]))
+}
+
+RnG_97_2_norm_un_N=function(n,b=0,mu=0,sigma=1){
+  r=rnorm(3*n,mu,sigma)
+  u=runif(5*n)
+  # r=r[u<(exp(r)*(r>0)+1)/(exp(r)*(r>0)+1+b)]
+  r=r[u<(exp(r)+1)/(exp(r)+1+b)]
+  return(list(x=r[1:n]))
+}
+
+RnG_linear_norm_un_N=function(n,b=0,mu=0,sigma=1){
+  r=rnorm(3*n,mu,sigma)
+  u=runif(3*n)
+  r=r[u<r*(r>0)*b/10+0.5]
+  return(list(x=r[1:n]))
+}
+
+RnG_mary_norm_un_N=function(n,m=0,b=0,mu=0,sigma=1){
+  y=rnorm(m,mu,sigma)
+  r=rnorm(3*n,mu,sigma)
+  u=runif(3*n)
+  # r=r[u<(exp(r)*(r>0)+1)/(exp(r)*(r>0)+1+b)]
+  r=r[u<0.2+0.8*exp(b*r)/(exp(b*r)+1)]
+  return(list(x=r[1:n],y=y))
+}
+
+x=RnG_97_2_norm_un_N(100,b=0)
+MM(sort(x$x),setting='norm',alpha=1.5,epsilon=0.2)
+
+x=RnG_97_1_norm_un_N(100,b=0)
+MM(sort(x$x),setting='norm',alpha=0.7,epsilon=0.2)
+
+MM(sort(x$x),x$N,penalty=TRUE)     ######### adjust penalty beta; run simulation for density and beta
+# 
+# x=RnG_97_1_half_norm(100,b=2)
+# -1/2/mean(x$x^2)
+# MM(sort(x$x),x$N,'half_norm')
+
+x=RnG_mary_norm(100,b=0)
+mu=mean(x$x);sigma2=var(x$x);c(-0.5/sigma2,mu/sigma2)
+MM(sort(x$x),x$N,'norm')
+
+
+x=RnG_97_1_gamma(20,b=0.4)
+mu=mean(x$x);sigma2=var(x$x);c(mu^2/sigma2,mu/sigma2)
+MM(sort(x$x),x$N,'gamma')$llf[1]
+```
+
+## Plot of different bias functions
+```{r}
+f1=function(r,b) (10*r*(r>0)+1)/(10*r*(r>0)+1+b)*0.8+0.2
+f2=function(r,b) (exp(r)+1)/(exp(r)+1+b)
+f3=function(r,b) (exp(r)*(r>0)+1)/(exp(r)*(r>0)+1+b)
+fel=function(r,b) r*(r>0)*b/10+0.5
+x=seq(-5,5,.01)
+plot(x,f2(x,2),type='l',ylim=c(0,1))
+lines(x,fel(x,1),col='red')
+```
+
+## Mary's Spline
+```{r}
+## maximum likelihood of density g -- we have another sample from f
+
+## make basis functions
+
+mle_bias=function(x,y,sp,minp){  ## biased observations, unb obs, support, minimum p
+
+	m1=min(min(x),suppressWarnings(min(y)));m2=max(max(x),suppressWarnings(max(y)))
+	if(sp[2]<m1|sp[1]>m2){print('bad support!')}
+	
+	mu0=mean(c(x,y))
+	sd0=sd(c(x,y))
+
+## set # knots
+
+	n=length(x)
+	m=length(y)
+	capn=m+n
+	
+	if(capn<201){
+		nk=7
+	}else if(capn<501){
+		nk=8
+	}else{nk=9}
+
+## make knots using normal quantiles
+	
+	qt=c(1:(nk-2)/(nk-1))
+	kn=c(sp[1],qnorm(qt,mu0,sd0),sp[2]) ### gai
+
+## make a big grid
+
+	N=1000
+	xp=0:N/N*(sp[2]-sp[1])+sp[1]
+## B splines:  use only x values!
+	wt=rep(0,N+1)
+	for(i in 1:n){
+		ii=which(min(abs(x[i]-xp))==abs(x[i]-xp))
+		wt[ii]=wt[ii]+1
+	}
+
+	dmat=bSpline(x,knots=kn[2:(nk-1)],degree=2,intercept=TRUE,Boundary.knots=sp)
+	dp=bSpline(xp,knots=kn[2:(nk-1)],degree=2,intercept=TRUE,Boundary.knots=sp)
+
+## constraint matrix
+
+	m=dim(dmat)[2]
+	amat=matrix(0,nrow=m,ncol=m)  ### positive and increasing
+	for(i in 1:(m-1)){amat[i,i]=-1;amat[i,i+1]=1}
+	amat[m,1]=1;amat[m,m]=-minp
+	
+###  Step 1:  estimate as if w==1; set mu0=mean(y) and sd0=sd(y)
+
+	st0=FALSE;nrep=0
+	while(nrep<100&st0==FALSE){
+		nrep=nrep+1
+		ans0=fisknown(x,mu0,sd0,dmat,amat,xp,dp,wt)
+		bhat=ans0$bhat
+		bhat[bhat<=0]=1e-8
+
+### find p from w
+
+		whatp=dp%*%bhat
+
+		phat=whatp/max(whatp)
+		rphat=dmat%*%bhat/max(whatp)
+
+### maximize llh numerically over mu, sig
+
+		prm=c(mu0,sd0)
+#		print(prm)
+		anum=optim(prm,mllh,gr=NULL,x,y,xp,phat)
+		mu1=anum$par[1]
+		sd1=anum$par[2]
+		if((mu1-mu0)^2+(sd1-sd0)^2<1e-6){
+			st0=TRUE
+		}else{
+			mu0=mu1
+			sd0=sd1
+		}
+#		print(nrep)
+#		print(anum$par)
+	}
+	# ans=new.env()
+	ans=list()
+	ans$llr=-anum$value+sum(log(rphat))-sum(log(dnorm(x,mean(c(x,y)),sd(c(x,y)))))-ifelse(is.null(y),0,sum(log(dnorm(y,mean(c(x,y)),sd(c(x,y)))))) ### gai
+	ans$bhat=bhat
+	ans$prm=c(mu1,sd1)
+	ans$gp=ans0$gp
+	ans$dp=dp
+	ans$xp=xp
+	ans$phat=phat
+	ans$what=whatp
+	ans$gmat=ans0$gmat
+	ans$dmat=dmat
+	return(ans)
+}
+
+fisknown=function(x,mu0,sd0,dmat,amat,xp,dp,wt){
+	n=length(x)
+	N=length(xp)
+	m=dim(dmat)[2]
+	gmat=dmat;gp=dp
+	wmat=matrix(0,nrow=N,ncol=N)
+	for(i in 1:m){
+		gmat[,i]=dmat[,i]*dnorm(x,mu0,sd0)
+		gp[,i]=dp[,i]*dnorm(xp,mu0,sd0)
+	}
+	aval=(max(xp)-min(xp))/N
+	avec=rep(aval,N)
+	bhat0=rep(1,m)
+	ghat0=gp%*%bhat0
+### mle is IRLS
+	nrep=0;stop=FALSE
+	while(nrep<100&stop==FALSE){
+		nrep=nrep+1
+		wt0=avec/ghat0*n
+		for(i in 1:N){wmat[i,i]=wt0[i]}
+		yproj=wt/avec/n
+		qmat=t(gp)%*%wmat%*%gp
+		umat=chol(qmat)
+		uinv=solve(umat)
+		zvec=t(uinv)%*%t(gp)%*%wmat%*%yproj
+		ans=coneA(zvec,amat%*%uinv)
+		bhat=uinv%*%ans$thetahat
+		if(sum((bhat-bhat0)^2)<1e-6){
+			stop=TRUE
+		}else{
+			bhat0=bhat
+			ghat0=gp%*%bhat
+		}
+	}
+	ans=new.env()
+	ans$bhat=bhat
+	ans$gmat=gmat
+	ans$gp=gp
+	ans$avec=avec
+	ans
+} 
+
+### compute negative log likelihood given mu and sig
+
+mllh=function(prm,x,y,xp,phat){
+	n=length(x)
+	dx=xp[12]-xp[11]
+	fp=dnorm(xp,prm[1],prm[2])
+	denom=sum(fp*phat)*dx
+	nllh=n*log(denom)-sum(log(dnorm(x,prm[1],prm[2])))-ifelse(is.null(y),0,sum(log(dnorm(y,prm[1],prm[2]))))
+	nllh
+}
+```
+
+## Mary's Spline - Gamma
+```{r}
+library(MASS)
+
+library(splines2)
+library(coneproj)
+## maximum likelihood of density g -- we have another sample from f
+
+## make basis functions
+
+mle_bias=function(x,y,sp,minp){  ## biased observations, unb obs, support, minimum p
+
+	m1=min(min(x),suppressWarnings(min(y)));m2=max(max(x),suppressWarnings(max(y)))
+	if(sp[2]<m1|sp[1]>m2){print('bad support!')}
+	
+
+## set # knots
+
+	n=length(x)
+	m=length(y)
+	capn=m+n
+	
+	beta0=mean(c(x,y))/var(c(x,y))*n/(n-1)
+  alpha0=beta0*mean(c(x,y))
+  
+	if(capn<201){
+		nk=7
+	}else if(capn<501){
+		nk=8
+	}else{nk=9}
+
+## make knots using normal quantiles
+	
+	qt=c(1:(nk-2)/(nk-1))
+	kn=c(sp[1],qgamma(qt,alpha0,beta0),sp[2]) ### 
+
+## make a big grid
+
+	N=1000
+	xp=1:N/N*(sp[2]-sp[1])+sp[1]
+## B splines:  use only x values!
+	wt=rep(0,N)
+	for(i in 1:n){
+		ii=which(min(abs(x[i]-xp))==abs(x[i]-xp))
+		wt[ii]=wt[ii]+1
+	}
+
+	dmat=bSpline(x,knots=kn[2:(nk-1)],degree=2,intercept=TRUE,Boundary.knots=sp)
+	dp=bSpline(xp,knots=kn[2:(nk-1)],degree=2,intercept=TRUE,Boundary.knots=sp)
+
+## constraint matrix
+
+	m=dim(dmat)[2]
+	amat=matrix(0,nrow=m,ncol=m)  ### positive and increasing
+	for(i in 1:(m-1)){amat[i,i]=-1;amat[i,i+1]=1}
+	amat[m,1]=1;amat[m,m]=-minp
+	
+###  Step 1:  estimate as if w==1; set mu0=mean(y) and sd0=sd(y)
+
+	st0=FALSE;nrep=0
+	while(nrep<100&st0==FALSE){
+		nrep=nrep+1
+		ans0=fisknown(x,alpha0,beta0,dmat,amat,xp,dp,wt)
+		bhat=ans0$bhat
+		bhat[bhat<=0]=1e-8
+
+### find p from w
+
+		whatp=dp%*%bhat
+
+		phat=whatp/max(whatp)
+		rphat=dmat%*%bhat/max(whatp)
+
+### maximize llh numerically over mu, sig
+
+		prm=c(alpha0,beta0)
+#		print(prm)
+		anum=optim(prm,mllh,gr=NULL,x,y,xp,phat)
+		alpha1=anum$par[1]
+		beta1=anum$par[2]
+		if((alpha1-alpha0)^2+(beta1-beta0)^2<1e-6){
+			st0=TRUE
+		}else{
+			alpha0=alpha1
+			beta0=beta1
+		}
+#		print(nrep)
+#		print(anum$par)
+	}
+	# ans=new.env()
+	ans=list()
+	ans$llr=-anum$value+sum(log(rphat))-sum(log(dgamma(x,alpha0,beta0)))-ifelse(is.null(y),0,sum(log(dgamma(y,alpha0,beta0)))) ### 
+	ans$bhat=bhat
+	ans$prm=c(alpha1,beta1)
+	ans$gp=ans0$gp
+	ans$dp=dp
+	ans$xp=xp
+	ans$phat=phat
+	ans$what=whatp
+	ans$gmat=ans0$gmat
+	ans$dmat=dmat
+	return(ans)
+}
+
+fisknown=function(x,alpha0,beta0,dmat,amat,xp,dp,wt){
+	n=length(x)
+	N=length(xp)
+	m=dim(dmat)[2]
+	gmat=dmat;gp=dp
+	wmat=matrix(0,nrow=N,ncol=N)
+	for(i in 1:m){
+		gmat[,i]=dmat[,i]*dgamma(x,alpha0,beta0)
+		gp[,i]=dp[,i]*dgamma(xp,alpha0,beta0)
+	}
+	aval=(max(xp)-min(xp))/N
+	avec=rep(aval,N)
+	bhat0=rep(1,m)
+	ghat0=gp%*%bhat0
+### mle is IRLS
+	nrep=0;stop=FALSE
+	while(nrep<100&stop==FALSE){
+		nrep=nrep+1
+		wt0=avec/ghat0*n
+		for(i in 1:N){wmat[i,i]=wt0[i]}
+		yproj=wt/avec/n
+		qmat=t(gp)%*%wmat%*%gp
+		umat=chol(qmat)
+		uinv=solve(umat)
+		zvec=t(uinv)%*%t(gp)%*%wmat%*%yproj
+		ans=coneA(zvec,amat%*%uinv)
+		bhat=uinv%*%ans$thetahat
+		if(sum((bhat-bhat0)^2)<1e-6){
+			stop=TRUE
+		}else{
+			bhat0=bhat
+			ghat0=gp%*%bhat
+		}
+	}
+	ans=new.env()
+	ans$bhat=bhat
+	ans$gmat=gmat
+	ans$gp=gp
+	ans$avec=avec
+	ans
+} 
+
+### compute negative log likelihood given mu and sig
+
+mllh=function(prm,x,y,xp,phat){
+	n=length(x)
+	dx=xp[12]-xp[11]
+	fp=dgamma(xp,prm[1],prm[2])
+	denom=sum(fp*phat)*dx
+	nllh=n*log(denom)-sum(log(dgamma(x,prm[1],prm[2])))-ifelse(is.null(y),0,sum(log(dgamma(y,prm[1],prm[2]))))
+	nllh
+}
+```
+
+## n=10,15,20,...,300, 1000 sims
+```{r fig.height=8, fig.width=20}
+bb=c(0)
+# n=seq(10,200,5)
+n=seq(205,300,5)
+duplicates=1000
+
+lambda95=array(dim=c(duplicates,5,length(n)))
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    # test_statistics[i,j,]
+    M=foreach(i=1:duplicates,.combine='rbind',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1_half_norm(n[j],b=b)
+      MME=MM(sort(x$x),x$N,'half_norm')
+      return(MME$llf)
+      }
+    lambda95[,,j]=M #apply(M,2,quantile,probs=0.05)
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+save(lambda95,file="hn_lambda95_all_1000sims_205_300.Rda")
+
+# 
+load("hn_lambda95_all_1000sims_10_200.Rda")
+lambda95_all_10_200=lambda95
+load("hn_lambda95_all_1000sims_205_300.Rda")
+lambda95_all_205_300=lambda95
+library(abind)
+lambda95_all_10_300=abind(lambda95_all_10_200,lambda95_all_205_300,along=3)
+save(lambda95_all_10_300,file="hn_lambda95_all_1000sims_10_300.Rda")
+
+
+#plot
+load('lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=array(dim=c(duplicates,6,length(n)))
+# plot_array[,c(1:4,6),]=lambda95_all_10_300[,c(1:4,7),]
+plot_array[,c(1:4,6),]=lambda95_all_10_300[,c(1:2,5:7),]
+plot_array[,5,]=lambda95_all_10_300[,5,]+lambda95_all_10_300[,6,]
+
+quantiles=apply(plot_array,c(2,3),quantile,probs=0.95)
+quantiles[!is.finite(quantiles)]=0
+
+# quantile plot
+par(mfrow=c(1,1))
+plot(1,type="n",ylab='.05 quantile',xlab='n',xlim=c(0,300),
+     ylim=c(-1.5,10),family="A",main='') 
+for(i in 1:6){
+  lines(n,quantiles[i,],pch=18,col=rainbow(7)[i],type="b",lty=1)
+}
+# legend('bottomleft',legend=c('llf_all','llf_1','llf_1_1','llf_1_2','llf_2+3','llf_4'),
+#        col=rainbow(7),lty=1,pch=18,text.font=10,bg="#f7f7f7")
+legend('bottomleft',legend=c('llf_all','llf_1','llf_2','llf_3','llf_2+3','llf_4'),
+       col=rainbow(7),lty=1,pch=18,text.font=10,bg="#f7f7f7")
+
+# quantile plot divided by n^0.5
+par(mfrow=c(1,1))
+plot(1,type="n",ylab='.05 quantile',xlab='n',xlim=c(0,300),
+     ylim=c(0,0.1),family="A",main='') 
+for(i in 1:6){
+  lines(n,quantiles[i,]/sqrt(n),pch=18,col=rainbow(7)[i],type="b",lty=1)
+  #lines(bb,betas2[,i],pch=19,col=heat.colors(5)[i],type="b",lty=2)
+}
+legend('bottomleft',legend=c('llf_all','llf_1','llf_1_1','llf_1_2','llf_2+3','llf_4'),
+       col=rainbow(7),lty=1,pch=18,text.font=10,bg="#f7f7f7")
+
+#
+plot(n,quantiles[1,],type='b',col='blue')
+
+# regression analysis of terms
+for(i in 1:6){
+  l=lm(quantiles[i,]~1 + I(n^0.5) + I(n) + I(n^2))
+  print(summary(l))
+}
+
+
+# plot of density
+load('lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5)
+target=lambda95_all_10_300[,7,]#+lambda95_all_10_300[,6,]
+# target=scale(target,center=FALSE,scale=n^0.5) #scale to 1/sqrt(n)
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  if(j==1) plot(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2,xlim=1.1*range(target),xlab='Lambda(X)',ylim=c(0,.8),main='density of Lambda(X)') # ylim=0.6 or 7
+  lines(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2)
+}
+legend_order=matrix(1:60,ncol=12,byrow = TRUE)
+legend('top',ncol=12,legend=c(paste0('n=',n),'')[legend_order],bg="#f7f7f7",cex=1,
+       col=c(rainbow(70)[1:length(n)],"#f7f7f7")[legend_order],lty=1,lwd=2)
+```
+
+## n=10,15,20,...,300, 10000 sims
+```{r fig.height=8, fig.width=20}
+bb=c(0)
+n=seq(10,300,5)
+duplicates=10000
+
+library(abind)
+test_stat=array(dim=c(0,8,59))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density_small_n/test_statistics_',i,'.Rda')))
+  test_stat=abind(test_stat,dt,along=1)
+}
+save(test_stat,file='all_test_stat_10000sims_small_n.Rda')
+
+# plot of density
+load('all_test_stat_10000sims_small_n.Rda')
+load('test_stat_350_1050.Rda')
+n=seq(10,300,5)
+target=test_stat[,7,]#+lambda95_all_10_300[,6,]
+# target=scale(target,center=FALSE,scale=n^0.5) #scale to 1/sqrt(n)
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  if(j==1) plot(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2,xlim=1.1*range(target),xlab='Lambda(X)',ylim=c(0,.8),main='density of Lambda(X)') # ylim=0.6 or 7
+  if(j%%5==1) lines(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2)
+}
+legend_order=matrix(1:60,ncol=12,byrow = TRUE)
+legend('top',ncol=12,legend=c(paste0('n=',n),'')[legend_order],bg="#f7f7f7",cex=1,
+       col=c(rainbow(70)[1:length(n)],"#f7f7f7")[legend_order],lty=1,lwd=2)
+
+```
+
+## *nouse* n=10,15,20,...,300, 10000 sims with p
+```{r fig.height=8, fig.width=20}
+bb=c(0)
+n=seq(10,300,5)
+duplicates=10000
+
+library(abind)
+test_stat=array(dim=c(0,8,59))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density_small_n_penalty/test_statistics_',i,'.Rda')))
+  test_stat=abind(test_stat,dt,along=1)
+}
+save(test_stat,file='all_test_stat_10000sims_small_n_with_p.Rda')
+
+# plot of density
+load('all_test_stat_10000sims_small_n_with_p.Rda')
+load('test_stat_350_1050.Rda')
+n=seq(10,300,5)
+target=test_stat[,8,]#+lambda95_all_10_300[,6,]
+# target=scale(target,center=FALSE,scale=n^0.5) #scale to 1/sqrt(n)
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  if(j==1) plot(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2,xlim=1.1*range(target),xlab='Lambda(X)',ylim=c(0,0.48),main='density of Lambda(X)') # ylim=0.6 or 7
+  if(j%%5==1) lines(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2)
+}
+legend_order=matrix(1:60,ncol=12,byrow = TRUE)
+legend('top',ncol=12,legend=c(paste0('n=',n),'')[legend_order],bg="#f7f7f7",cex=1,
+       col=c(rainbow(70)[1:length(n)],"#f7f7f7")[legend_order],lty=1,lwd=2)
+
+```
+
+## find the coefficient n^alpha
+```{r}
+# 95 quantile
+load('lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=array(dim=c(duplicates,6,length(n)))
+plot_array[,c(1:4,6),]=lambda95_all_10_300[,c(1:4,7),]
+plot_array[,5,]=lambda95_all_10_300[,5,]+lambda95_all_10_300[,6,]
+quantiles=apply(plot_array,c(2,3),quantile,probs=0.95)[1,]
+
+load('hn_lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=lambda95_all_10_300
+quantiles=apply(plot_array,c(2,3),quantile,probs=0.95)[1,]
+
+
+l=lm(log(quantiles)~log(n))
+summary(l)
+
+# mean
+load('lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=array(dim=c(duplicates,6,length(n)))
+plot_array[,c(1:4,6),]=lambda95_all_10_300[,c(1:4,7),]
+plot_array[,5,]=lambda95_all_10_300[,5,]+lambda95_all_10_300[,6,]
+quantiles=apply(plot_array,c(2,3),mean)[1,]
+
+load('hn_lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=lambda95_all_10_300
+quantiles=apply(plot_array,c(2,3),mean)[1,]
+
+
+l=lm(log(quantiles)~log(n))
+summary(l)
+```
+
+## hn - n=10,15,20,...,300, 1000 sims
+```{r fig.height=8, fig.width=20}
+bb=c(0)
+# n=seq(10,200,5)
+n=seq(205,300,5)
+duplicates=1000
+
+lambda95=array(dim=c(duplicates,5,length(n)))
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    # test_statistics[i,j,]
+    M=foreach(i=1:duplicates,.combine='rbind',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1_half_norm(n[j],b=b)
+      MME=MM(sort(x$x),x$N,'half_norm')
+      return(MME$llf)
+      }
+    lambda95[,,j]=M #apply(M,2,quantile,probs=0.05)
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+save(lambda95,file="hn_lambda95_all_1000sims_205_300.Rda")
+
+# 
+load("hn_lambda95_all_1000sims_10_200.Rda")
+lambda95_all_10_200=lambda95
+load("hn_lambda95_all_1000sims_205_300.Rda")
+lambda95_all_205_300=lambda95
+library(abind)
+lambda95_all_10_300=abind(lambda95_all_10_200,lambda95_all_205_300,along=3)
+save(lambda95_all_10_300,file="hn_lambda95_all_1000sims_10_300.Rda")
+
+
+#plot
+load('hn_lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5);duplicates=1e3
+plot_array=lambda95_all_10_300
+
+quantiles=apply(plot_array,c(2,3),quantile,probs=0.05)
+
+# quantile plot
+par(mfrow=c(1,1))
+plot(1,type="n",ylab='.05 quantile',xlab='n',xlim=c(0,300),
+     ylim=c(0,1.5),family="A",main='') 
+for(i in 1:5){
+  lines(n,quantiles[i,],pch=18,col=rainbow(6)[i],type="b",lty=1)
+  #lines(bb,betas2[,i],pch=19,col=heat.colors(5)[i],type="b",lty=2)
+}
+legend('bottomleft',legend=c('llf_all','llf_1','llf_2','llf_3','llf_4'),
+       col=rainbow(6)[1:5],lty=1,pch=18,text.font=10,bg="#f7f7f7")
+
+# quantile plot divided by n^0.5
+par(mfrow=c(1,1))
+plot(1,type="n",ylab='.05 quantile',xlab='n',xlim=c(0,300),
+     ylim=c(0,0.1),family="A",main='') 
+for(i in 1:6){
+  lines(n,quantiles[i,]/sqrt(n),pch=18,col=rainbow(7)[i],type="b",lty=1)
+  #lines(bb,betas2[,i],pch=19,col=heat.colors(5)[i],type="b",lty=2)
+}
+legend('bottomleft',legend=c('llf_all','llf_1','llf_1_1','llf_1_2','llf_2+3','llf_4'),
+       col=rainbow(7),lty=1,pch=18,text.font=10,bg="#f7f7f7")
+
+#
+plot(n,quantiles[1,],type='b',col='blue')
+
+# regression analysis of terms
+for(i in 1:6){
+  l=lm(quantiles[i,]~1 + I(n^0.5) + I(n) + I(n^2))
+  print(summary(l))
+}
+
+
+# plot of density
+load('hn_lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5)
+target=lambda95_all_10_300[,1,]
+target=scale(target,center=FALSE,scale=n^0.5) #scale to 1/sqrt(n)
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  if(j==1) plot(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2,xlim=1.1*range(target),xlab='Lambda(X)',ylim=c(0,7),main='density of Lambda(X)') # ylim=0.6 or 7
+  lines(density(target[j,]),col=rainbow(70)[j],lty=1,lwd=2)
+}
+legend_order=matrix(1:60,ncol=12,byrow = TRUE)
+legend('top',ncol=12,legend=c(paste0('n=',n),'')[legend_order],bg="#f7f7f7",cex=1,
+       col=c(rainbow(70)[1:length(n)],"#f7f7f7")[legend_order],lty=1,lwd=2)
+```
+
+## *nouse* Verify consistency of log-likelihood RATIO (density curves)
+```{r fig.height=8, fig.width=20}
+bb=c(0)
+n=c(450,500)
+duplicates=10000
+
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(20)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,0.5),main='density of the test statistic Lambda')
+    lines(density(test_statistics[i,j,]),col=rainbow(20)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(20)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## *nouse* Verify consistency of llf (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=sum(log(v*N/n))+(theta-theta0)*sum(-x)+n*log(theta/theta0)+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(llf/n^0.5) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)*0.8){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(0)
+n=c(350)
+duplicates=10000
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+save(test_statistics,file='llf_10000sims_n350')
+```
+
+## n=350,400,450,500,800,850,1000,1050 10000 sims
+```{r figure}
+# 350 & 400
+library(abind)
+test_stat_350_400=array(dim=c(0,7,2))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density/test_statistics_number=',i)))
+  test_stat_350_400=abind(test_stat_350_400,dt,along=1)
+}
+# 450 & 500
+test_stat_450_500=array(dim=c(0,7,2))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density/test_statistics_450_500_',i)))
+  test_stat_450_500=abind(test_stat_450_500,dt,along=1)
+}
+# 800 & 850
+test_stat_800_850=array(dim=c(0,7,2))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density/test_statistics_800_850_',i)))
+  test_stat_800_850=abind(test_stat_800_850,dt,along=1)
+}
+# 1000 & 1050
+test_stat_1000_1050=array(dim=c(0,7,2))
+for(i in 1:40){
+  dt=get(load(paste0('MM_density/test_statistics_1000_1050_',i)))
+  test_stat_1000_1050=abind(test_stat_1000_1050,dt,along=1)
+}
+# combine
+all_test_stat=abind(test_stat_350_400,test_stat_450_500,test_stat_800_850,test_stat_1000_1050,along=3)
+# save(all_test_stat,file='test_stat_350_1050.Rda')
+
+# plot
+load('test_stat_350_1050.Rda')
+n=c(seq(350,500,50),800,850,1000,1050)
+plot_array=array(dim=c(1e4,4,8))
+plot_array[,c(1,2,4),]=all_test_stat[,c(1,2,7),]
+plot_array[,3,]=all_test_stat[,5,]+all_test_stat[,6,]
+title=paste0('Lambda',c('','_1','_2+3','_4'))
+
+### /n^(2/3)
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  M=scale(M,center=FALSE,scale=n^(2/3))
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-0.2,0.3),ylim=c(0,30))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+
+### /n^(1/2)
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  M=scale(M,center=FALSE,scale=n^(1/2)) #scale to 1/sqrt(n)
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-0.4,1),ylim=c(0,15))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+
+### /(n/log(log(n)))^(1/2)
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  M=scale(M,center=FALSE,scale=(n/log(log(n)))^(1/2)) 
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-0.4,1),ylim=c(0,11))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+
+### /n^(1/3)
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  M=scale(M,center=FALSE,scale=n^(1/3))
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-0.8,1.3),ylim=c(0,6))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+
+### /n^(1/6)
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  M=scale(M,center=FALSE,scale=n^(1/6))
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-3,5),ylim=c(0,2))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+
+###
+layout(matrix(c(1,2,3,4,5,5),nrow=3,ncol=2,byrow=TRUE),heights=c(0.5,0.5,0.1))
+for(i in 1:4){
+  par(mar=c(2,2,1,1))
+  M=plot_array[,i,]
+  plot(density(M[,1]),lwd=2,col=cm.colors(8)[1],main=title[i],xlim=c(-8,12),ylim=c(0,0.55))
+  for(j in 2:8){
+    lines(density(M[,j]),lwd=2,col=cm.colors(8)[j])
+  }
+}
+par(mar=c(0,0,0,0))
+plot(1,type="n",xlab="",ylab="",axes=FALSE)
+legend('top',legend=paste0('n=',n),col=cm.colors(8)[1:8],lty=1,text.font=10,bg="#f7f7f7",horiz=TRUE)
+```
+
+## Chi-square?
+```{r}
+parameters_of_Gamma=function(x){
+  u=mean(x);v=var(x)
+  beta=u/v
+  alpha=u^2/v
+  return(c(alpha=alpha,beta=beta))
+}
+
+N=1e6
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=N,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+t1=Sys.time()
+target=foreach(ii=1:N,.options.snow=opts,.combine='c') %dopar% {
+  x=RnG_97_1(25,b=0)
+  return(MM(sort(x$x),x$N)$llf[1])
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+# load('test_stat_350_1050.Rda')
+# target=all_test_stat[,1,8]
+plot(density(target))
+para=parameters_of_Gamma(target)
+lines(density(rchisq(1e6,2*para[1])/2/para[2]),col='red')
+```
+
+## Tail-equivalence to chi-square?
+```{r}
+parameters_of_Gamma=function(x){
+  u=mean(x);v=var(x)
+  beta=u/v
+  alpha=u^2/v
+  return(c(alpha=alpha,beta=beta))
+}
+
+# n=seq(5,40,5)
+n=seq(45,70,5)
+N=1e5
+
+result=matrix(nrow=N,ncol=length(n))
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=N,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  cat('n =',n[j],'\n')
+  result[,j]=foreach(ii=1:N,.options.snow=opts,.combine='c') %dopar% {
+    x=RnG_97_1(n[j],b=0)
+    return(MM(sort(x$x),x$N)$llf[1])
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+save(result,file='tail-chi2.Rda')
+# load('test_stat_350_1050.Rda')
+# # target=all_test_stat[,1,8]
+
+# plot(density(target))
+# para=parameters_of_Gamma(target)
+# lines(density(rchisq(1e6,2*para[1])/2/para[2]),col='red')
+
+load('tail-chi.Rda')
+tails=matrix(nrow=ncol(result),ncol=4)
+for(i in 1:ncol(result)){
+  target=result[,i]
+  para=parameters_of_Gamma(target)
+  q1=quantile(target,0.95)
+  q2=qchisq(0.95,2*para[1])/2/para[2]
+  tails[i,]=c(q1,q2,q1-q2,(q1-q2)/q1)
+}
+
+load('lambda95_all_1000sims_10_300.Rda')
+tails=matrix(nrow=dim(lambda95_all_10_300)[3],ncol=4)
+for(i in 1:dim(lambda95_all_10_300)[3]){
+  target=lambda95_all_10_300[,1,i]
+  # para=parameters_of_Gamma(target)
+  para=c(mean(target)*1.5,1.5)
+  q1=quantile(target,0.95)
+  q2=qchisq(0.95,2*para[1])/2/para[2]
+  tails[i,]=c(q1,q2,q1-q2,(q1-q2)/q1)
+}
+```
+
+## Investivate the shape of Gamma distribution
+```{r}
+# Method of moments
+# load('test_stat_350_1050.Rda')
+# n=c(seq(350,500,50),800,850,1000,1050)
+# plot_array=array(dim=c(1e4,4,8))
+# plot_array[,c(1,2,4),]=all_test_stat[,c(1,2,7),]
+# plot_array[,3,]=all_test_stat[,5,]+all_test_stat[,6,]
+# target=plot_array[,1,]
+
+load('lambda95_all_1000sims_10_300.Rda')
+n=seq(10,300,5)
+target=lambda95_all_10_300[,1,]
+
+parameters_of_Gamma=function(x){
+  u=mean(x);v=var(x)
+  beta=u/v
+  alpha=u^2/v
+  return(c(alpha=alpha,beta=beta))
+}
+
+# target=scale(target,center=FALSE,scale=n^(2/5))
+para=apply(target,2,parameters_of_Gamma)
+
+plot(n,para[1,],type='b',col='blue')
+lines(n,0.7515*log(n)+0.2061,type='b',col='red')
+lines(n,exp(0.2856)*n^0.2161,type='b',col='green')
+
+par(mfrow=c(1,1))
+plot(1,type='n',xlim=c(0,300),ylim=range(para),main='parameters (blue=alpha, orange=beta)',xlab='n',ylab='alpha+beta')
+lines(n,para[1,],type='b',col='blue')
+lines(n,para[2,],type='b',col='orange')
+
+target=lambda95_all_10_300[,2,]
+target=scale(target,center=FALSE,scale=n^0.5) #scale to 1/sqrt(n)
+para=apply(target,2,parameters_of_Gamma)
+par(mfrow=c(1,1))
+plot(1,type='n',xlim=c(0,300),ylim=range(para),main='parameters (blue=alpha, orange=beta)',xlab='n',ylab='alpha+beta')
+lines(n,para[1,],type='b',col='blue')
+lines(n,para[2,],type='b',col='orange')
+
+
+# for large n
+load('test_stat_350_1050.Rda')
+n=c(seq(350,500,50),800,850,1000,1050)
+target=all_test_stat[,1,]
+para=apply(target,2,parameters_of_Gamma)
+plot(n,para[1,],type='b',col='blue')
+lines(n,0.7515*log(n)+0.2061,type='b',col='red')
+lines(n,exp(0.2856)*n^0.2161,type='b',col='green')
+```
+
+## Large n simulation
+```{r}
+betas_large_n=get(load(paste0('MM_power_large_n/power_200_400_full_b_',1)))
+for(i in 2:40){
+  dt=get(load(paste0('MM_power_large_n/power_200_400_full_b_',i)))
+  betas_large_n=betas_large_n+dt
+}
+betas_large_n=betas_large_n/40
+save(betas_large_n,file='2_MM_power_large_n.Rda')
+```
+
+## Verify consistency of 1st term (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=sum(log(v*N/n))
+      return(llf/n^0.5) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)*0.8){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(0)
+n=c(50,100,150,200,250,300,350,400)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,4),main='density of the 1st part of 1st term')
+    lines(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(16)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## Verify consistency of 1st part of 1st term (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=sum(log(v*N/n))-n*log(N*(1-c$c)/(N-n))
+      return(llf/n^0.5) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(0.2)
+n=c(50,100,150,200,250,300,350,400)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,3),main='density of the 1st part of 1st term')
+    lines(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(16)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## Verify consistency of 2nd part of 1st term (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=n*log(N*(1-c$c)/(N-n))
+      return(llf) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(4)
+n=c(50,100,150,200,250,300,350,400)
+duplicates=300
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf/n[j]^0.5)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,7),main='density of the 1st part of 1st term')
+    lines(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(16)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## Verify consistency of 2nd+3rd term (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=(theta-theta0)*sum(-x)+n*log(theta/theta0)
+      return(llf) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(4)
+n=c(50,100,150,200,250,300,350,400)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf/n[j]^0.5)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,7),main='density of the 1st part of 1st term')
+    lines(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(16)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## Verify consistency of 4th term (density curves)
+```{r fig.height=8, fig.width=20}
+#directly change llf to be the 1st part of 1st term
+MM=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(llf) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf,c=c$c))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+
+bb=c(4)
+n=c(50,100,150,200,250,300,350,400)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+# registerDoParallel(cl<-makeCluster(12))
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=duplicates,style=3)
+progress=function(n) setTxtProgressBar(pb,n)
+opts=list(progress=progress)
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    message('\nb = ',b,', n = ',n[j])
+    ts=Sys.time()
+    test_statistics[i,j,]=foreach(i=1:duplicates,.combine='c',
+                                  .options.snow=opts) %dopar% {
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf/n[j]^0.5)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb)
+stopCluster(cl)
+
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,7),main='density of the 1st part of 1st term')
+    lines(density(test_statistics[i,j,]),col=rainbow(16)[2*j-1],lty=1,lwd=2)
+  }
+}
+legend('top',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(16)[2*(1:length(n))-1],each=length(bb)),lty=1,horiz=TRUE,lwd=2)
+```
+
+## Verify consistency of log-likelihood RATIO (95% percentile)
+```{r fig.height=8, fig.width=20}
+library(pbapply) 
+bb=c(4)
+n=seq(10,200,20)
+duplicates=30
+lambda95=vector(length=length(n))
+for(j in 1:(length(n)/2)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    lambda95[j]=quantile(pbsapply(1:duplicates,function(nouse){
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf/(n[j])^0.5)}),0.05)
+  }
+}
+for(j in (length(n)/2+1):length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    lambda95[j]=quantile(pbsapply(1:duplicates,function(nouse){
+      x=RnG_97_1(n[j],b=b)
+      MME=MM(sort(x$x),x$N)
+      return(MME$llf)}),0.05)
+  }
+}
+par(mfrow=c(1,1))
+plot(n,lambda95,type='b',col='blue')
+```
+
+
+## How about the consistency of term 2 & 3?   ### why not chi-sq?
+```{r fig.height=8, fig.width=20}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+MM2and3=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=(theta-theta0)*sum(-x)+n*log(theta/theta0)
+      return(llf) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+
+library(pbapply) 
+bb=c(0,2,4)
+n=c(10,20,50,100)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    test_statistics[i,j,]=pbsapply(1:duplicates,function(nouse){
+      x=RnG_97_1(n[j],b=b)
+      MME=MM2and3(sort(x$x),x$N)
+      return(MME$llf)})
+  }
+}
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),col=rainbow(10)[3*i-1],lty=j,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,4),main='2+3')
+    lines(density(test_statistics[i,j,]),col=rainbow(10)[3*i-1],lty=j,lwd=2)
+  }
+}
+legend('topleft',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(10)[3*(1:length(bb))-1],each=length(n)),lty=1:length(n),horiz=TRUE,lwd=2)
+# curve( dchisq(x, df=28), col='red', main = "Chi-Square Density Graph",from=0,to=60)
+```
+
+## How about the consistency of term 1 & 4?
+```{r fig.height=8, fig.width=20}
+RnG_97_1=function(n,b=0,theta=1){
+  i=0;N=0
+  x=c()
+  while(i<n){
+    r=rexp(1,theta)
+    if(runif(1)<(10*r+1)/(10*r+1+b)){
+      x=c(x,r)
+      i=i+1
+    }
+    N=N+1
+  }
+  return(list(x=x,N=N))
+}
+MM1and4=function(x,N,setting='EXP'){#,alpha,beta){
+  n=length(x)
+  
+  if(setting=='EXP'){
+    compute_p=function(x,theta){
+      x=c(x,Inf)
+      return(diff(pexp(x,theta)))
+    }
+    compute_dp=function(x,theta){
+      dF=c(x*exp(-theta*x),0)
+      return(dF[2:(n+1)]-dF[1:n])
+    }
+    dl_dtheta=function(x,theta,v){ # partial derivative: d(l)/d(theta) (ignoring constants, increasing)
+      p=compute_p(x,theta)
+      dp=compute_dp(x,theta)
+      return((N-n)/(1-sum(p*v))*sum(dp*v)-n/theta+sum(x)) ###### changeable
+    }
+    compute_llf=function(x,theta,v){
+      p=compute_p(x,theta)
+      # llf=sum(log(v))-theta*sum(x)+n*log(theta)+(N-n)*log(1-sum(p*v))
+      theta0=1/mean(x)
+      p0=compute_p(x,theta0)
+      llf=sum(log(v)*N/n)+(N-n)*log((1-sum(p*v))/(1-sum(p0*n/N)))
+      return(llf) ###### changeable
+    }
+  }
+  else if(setting=='POI'){
+    
+  }
+  
+  est=function(c,theta){
+    a=rep(1,n)#;a[1]=a[1]+n*alpha
+    b=(N-n)/(1-c)*p#;b[n]=b[n]+n*beta ###### changeable
+    
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    #cat(sum(p*v))
+    #cat('\n')
+    v=sapply(v,min,1)
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+  }
+  
+  bisection_c=function(left,right,theta,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=mid-sum(p*est(mid,theta)$v) ###### changeable?
+    if(abs(left-right)<0.0001) return(list(c=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    #cat(c(left,right,mid,fmid))
+    #cat('\n')
+    if(fmid>=0) return(bisection_c(left,mid,theta,iter))
+    if(fmid<0) return(bisection_c(mid,right,theta,iter))
+  }
+  
+  bisection_theta=function(left,right,v,iter=1){ # f increasing
+    mid=(left+right)/2
+    fmid=dl_dtheta(x,mid,v)
+    if(abs(left-right)<0.00001) return(list(theta=mid,iter=iter,fmid=fmid))
+    iter=iter+1
+    # cat(c(left,right,mid,fmid))
+    # cat('\n')
+    if(fmid>=0) return(bisection_theta(left,mid,v,iter))
+    if(fmid<0) return(bisection_theta(mid,right,v,iter))
+  }
+  
+  theta0=1/mean(x) 
+  #theta0=mean(x)/var(x) # under HA, mean=(b+1)/theta, var=(b+1)/theta^2
+  loop=1
+  repeat{
+    p=compute_p(x,theta0);c=bisection_c(0,1,theta0)
+    v=est(c$c,theta0)
+    theta=bisection_theta(0,5/mean(x),v$v)
+    
+    llf=compute_llf(x,theta$theta,v$v)
+    #' cat(loop,'\n',
+    #'     'c:',c$c,c$iter,c$fmid,'\n',
+    #'     'v:',v$v_tilde,v$index,'\n',
+    #'     'theta:',theta$theta,theta$iter,theta$fmid,'\n',
+    #'     #'llf0:',llf0,'\n',
+    #'     'llf:',llf,sum(p*v$v),'\n')
+    if(abs(theta$theta-theta0)<0.001) return(list(v=v$v_tilde,theta=theta$theta,llf=llf))
+    theta0=theta$theta #;v0=v
+    loop=loop+1
+  }
+}
+
+library(pbapply) 
+bb=c(0,2,4)
+n=c(10,20,50,100)
+duplicates=100
+test_statistics=array(dim=c(length(bb),length(n),duplicates))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    test_statistics[i,j,]=pbsapply(1:duplicates,function(nouse){
+      x=RnG_97_1(n[j],b=b)
+      MME=MM1and4(sort(x$x),x$N)
+      return(MME$llf)})
+  }
+}
+par(mfrow=c(1,1))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    if(i==1 & j==1) plot(density(test_statistics[i,j,]),type='l',col=rainbow(10)[3*i-1],lty=j,lwd=2,xlim=1.1*range(test_statistics),xlab='T(X)',ylim=c(0,0.3),main='1+4')
+    lines(density(test_statistics[i,j,]),col=rainbow(10)[3*i-1],lty=j,lwd=2)
+  }
+}
+legend('topleft',legend=paste0('n=',as.vector(outer(n,bb,paste,sep=", b="))),bg="#f7f7f7",cex=1,
+       col=rep(rainbow(10)[3*(1:length(bb))-1],each=length(n)),lty=1:length(n),horiz=TRUE,lwd=2)
+```
+
+## Power of Spline (Mary)
+```{r}
+sp=c(-4.5,4.5);minp=0.05
+
+M=1000;M2=1000
+bb=seq(0,4,0.8)
+# bb=seq(0,0,1)
+n=c(100,200,500)
+k=Inf
+cri_vec=vector(length=length(n))
+betas=matrix(nrow=length(bb),ncol=length(n))
+rownames(betas)=bb
+colnames(betas)=n
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+for(j in 1:length(n)){
+  cat('n =',n[j],'\n')
+  
+  ts=Sys.time()
+  llrs=foreach(ii=1:M,.combine='rbind',.options.snow=opts,.packages=c('MASS','splines2','coneproj')) %dopar% {
+    x=RnG_mary_norm_un_N(n[j],b=0)
+    y=rnorm(n[j]/k)
+    return(mle_bias(x$x,y,sp,minp)$llr)
+  }
+  te=Sys.time()
+  message(' ',format(round(te-ts,2)))
+  cri_vec[j]=quantile(llrs,0.95)
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+t1=Sys.time()
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    
+    ts=Sys.time()
+    llrs=foreach(ii=1:M2,.combine='rbind',.options.snow=opts2,.packages=c('MASS','splines2','coneproj')) %dopar% {
+      x=RnG_mary_norm_un_N(n[j],b=b)
+      y=rnorm(n[j]/k)
+      return(mle_bias(x$x,y,sp,minp)$llr)
+    }
+    te=Sys.time()
+    message(' ',format(round(te-ts,2)))
+  
+    betas[i,j]=sum(llrs>cri_vec[j])/M2
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb);close(pb2)
+stopCluster(cl)
+
+save(betas,file="Spline_power_m=0_n=100_200_500.Rda")
+```
+
+## hn - Power of MM
+```{r}
+library(pbapply) 
+M=M2=30
+bb=seq(0,4,0.4)
+n=c(10,20,50,100)
+betas=matrix(nrow=length(bb),ncol=length(n))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    temp=pbsapply(1:M,function(nouse){
+      x=RnG_97_1_half_norm(n[j],b=b)
+      MME=MM(sort(x$x),x$N,'half_norm')$llf[1]
+      cri=quantile(pbsapply(1:M2,function(nouse){
+        x=RnG_97_1_half_norm(n[j],b=0,theta=MME$theta)
+        return(MM(sort(x$x),x$N,'half_norm')$llf[1])
+      }),0.05)
+      if(MME<cri) return(1)
+      return(0)})
+    betas[i,j]=sum(temp)/M
+  }
+}
+save(betas,file="hn_MM_power.Rda")
+```
+
+## Power of MM - SL (single loop)
+```{r}
+M=100;M2=1000
+bb=seq(0,3,.5)
+# bb=seq(0,0,1)
+n=c(1000)
+# alpha=c(0.5,1,2,5)
+alpha=c(.3,.7) #exp-0.7;gamma-0.3
+epsilon=c(0.2) #0.2
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n')
+      
+      ts=Sys.time()
+      simus=foreach(ii=1:M2,.combine='c',.options.snow=opts2,.packages='fdrtool') %dopar% {
+        x=RnG_linear_gamma_un_N(n[j],b=0)
+        o2=MM(sort(x$x),N=x$N,setting='gamma',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+        return(o2)
+      }
+      te=Sys.time()
+      message(' ',format(round(te-ts,2)))
+
+      cri=quantile(simus,0.95)
+      
+      for(i in 1:length(bb)){
+        b=bb[i]
+        
+        ts=Sys.time()
+        llr=foreach(ii=1:M,.combine='c',.options.snow=opts,.packages='fdrtool') %dopar% {
+          x=RnG_linear_gamma_un_N(n[j],b=b)
+          o2=MM(sort(x$x),N=x$N,setting='gamma',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+          return(o2)
+        }
+        te=Sys.time()
+        message(' b=',b,' ',format(round(te-ts,2)))
+        
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb);close(pb2)
+stopCluster(cl)
+save(betas,file="MM_power_unknownN_gamma_linear_n=1000.Rda")
+```
+<!-- # for(j in 1:length(n)){ -->
+<!-- #   for(i in 1:length(bb)){ -->
+<!-- #     for(k in 1:length(alpha)){ -->
+<!-- #       for(l in 1:length(epsilon)){ -->
+<!-- #         b=bb[i] -->
+<!-- #         cat('b =',b,'n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n') -->
+<!-- #          -->
+<!-- #         ts=Sys.time() -->
+<!-- #         MMEs=foreach(ii=1:M,.options.snow=opts) %dopar% { -->
+<!-- #           x=RnG_97_1(n[j],b=b) -->
+<!-- #           # if(b==0) return(MM(sort(x$x),alpha=alpha[k],epsilon=1)) -->
+<!-- #           return(MM(sort(x$x),alpha=alpha[k],epsilon=epsilon[l])) -->
+<!-- #         } -->
+<!-- #         te=Sys.time() -->
+<!-- #         message(' ',format(round(te-ts,2))) -->
+<!-- # -->
+<!-- #         ts=Sys.time() -->
+<!-- #         simus=foreach(ii=1:M,.combine='rbind',.options.snow=opts2,.packages = 'foreach') %:% -->
+<!-- #             foreach(jj=1:M2,.combine='c') %dopar% { -->
+<!-- #               MME=MMEs[[ii]] -->
+<!-- #               theta=MME$theta -->
+<!-- #               x=RnG_97_1(n[j],b=0,theta=theta) -->
+<!-- #               return(MM(sort(x$x),alpha=alpha[k],epsilon=epsilon[l])$llf[1]) -->
+<!-- #             } -->
+<!-- #         te=Sys.time() -->
+<!-- #         message(' ',format(round(te-ts,2))) -->
+<!-- # -->
+<!-- #         cri=apply(simus,1,quantile,0.95) -->
+<!-- #         llr=sapply(1:M,function(i) return(MMEs[[i]]$llf[1])) -->
+<!-- #         betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M -->
+<!-- #       } -->
+<!-- #     } -->
+<!-- #   } -->
+<!-- # } -->
+
+<!-- ## Power of MM - SL (single loop) -->
+<!-- ```{r} -->
+<!-- M=100;M2=1000 -->
+<!-- bb=seq(0,4,1) -->
+<!-- # bb=seq(0,0,1) -->
+<!-- n=c(200) -->
+<!-- # alpha=c(0.5,1,2,5) -->
+<!-- alpha=c(.7) -->
+<!-- epsilon=c(0.2) -->
+<!-- betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon)) -->
+<!-- rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";") -->
+<!-- colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";") -->
+
+<!-- library(doSNOW) -->
+<!-- library(foreach) -->
+<!-- library(doParallel) -->
+<!-- registerDoSNOW(cl<-makeCluster(12)) -->
+<!-- pb=txtProgressBar(max=M,style=3) -->
+<!--   progress=function(n) setTxtProgressBar(pb,n) -->
+<!--   opts=list(progress=progress) -->
+<!-- pb2=txtProgressBar(max=M2,style=3) -->
+<!--   progress2=function(n) setTxtProgressBar(pb2,n) -->
+<!--   opts2=list(progress=progress2) -->
+<!-- t1=Sys.time() -->
+<!-- cat('M =',M,'M2 =',M2,'\n') -->
+<!-- for(j in 1:length(n)){ -->
+<!--   for(l in 1:length(epsilon)){ -->
+<!--     for(k in 1:length(alpha)){ -->
+<!--       cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n') -->
+
+<!--       ts=Sys.time() -->
+<!--       simus=foreach(ii=1:M2,.combine='c',.options.snow=opts2) %dopar% { -->
+<!--         x=RnG_97_1(n[j],b=0) -->
+<!--         return(MM(sort(x$x),alpha=alpha[k],epsilon=epsilon[l])$llf[1]) -->
+<!--       } -->
+<!--       te=Sys.time() -->
+<!--       message(' ',format(round(te-ts,2))) -->
+
+<!--       cri=quantile(simus,0.95) -->
+
+<!--       for(i in 1:length(bb)){ -->
+<!--         b=bb[i] -->
+
+<!--         ts=Sys.time() -->
+<!--         llr=foreach(ii=1:M,.combine='c',.options.snow=opts) %dopar% { -->
+<!--           x=RnG_97_1(n[j],b=b) -->
+<!--           # if(b==0) return(MM(sort(x$x),alpha=alpha[k],epsilon=1)) -->
+<!--           return(MM(sort(x$x),alpha=alpha[k],epsilon=epsilon[l])$llf[1]) -->
+<!--         } -->
+<!--         te=Sys.time() -->
+<!--         message(' b=',b,' ',format(round(te-ts,2))) -->
+
+<!--         betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M -->
+<!--       } -->
+<!--     } -->
+<!--   } -->
+<!-- } -->
+<!-- t2=Sys.time() -->
+<!-- message(format(round(t2-t1,2))) -->
+<!-- close(pb);close(pb2) -->
+<!-- stopCluster(cl) -->
+<!-- save(betas,file="MM_power_SL_unknownN_n=500.Rda") -->
+<!-- ``` -->
+
+## Power of MM - SL (single loop) - Y
+```{r}
+M=10000;M2=10000
+bb=seq(0,4,.8)
+# bb=seq(0,0,1)
+n=c(100,200,500);m=ceiling(n^(2/3)/2)
+# alpha=c(0.5,1,2,5)
+alpha=c(.7) #exp-0.7;gamma-0.3
+epsilon=c(0.2) #0.2
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n')
+      
+      ts=Sys.time()
+      simus=foreach(ii=1:M2,.combine='c',.options.snow=opts2,.packages='fdrtool') %dopar% {
+        x=RnG_97_1_un_N(n[j],m[j],b=0)
+        o2=MM(x$x,x$y,setting='EXP',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+        return(o2)
+      }
+      te=Sys.time()
+      message(' ',format(round(te-ts,2)))
+
+      cri=quantile(simus,0.95)
+      
+      for(i in 1:length(bb)){
+        b=bb[i]
+        
+        ts=Sys.time()
+        llr=foreach(ii=1:M,.combine='c',.options.snow=opts,.packages='fdrtool') %dopar% {
+          x=RnG_97_1_un_N(n[j],m[j],b=b)
+          o2=MM(x$x,x$y,setting='EXP',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+          return(o2)
+        }
+        te=Sys.time()
+        message(' b=',b,' ',format(round(te-ts,2)))
+        
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb);close(pb2)
+stopCluster(cl)
+save(betas,file="MM_power_m=n^(2-3)-2_exp_n=100_200_500_M=1e4.Rda")
+```
+
+## Power of MM - ML (multiple loops) - Y
+```{r}
+M=100;M2=100
+bb=seq(0,4,.8)
+# bb=seq(0,0,1)
+n=c(1000);m=n/Inf
+# alpha=c(0.5,1,2,5)
+alpha=c(.5) #exp-0.7;gamma-0.3
+epsilon=c(0.2) #0.2
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M*M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      # ts=Sys.time()
+      # simus=foreach(ii=1:M2,.combine='c',.options.snow=opts2,.packages='fdrtool') %dopar% {
+      #   x=RnG_mary_norm_un_N(n[j],m[j],b=0)
+      #   o2=MM(x$x,x$y,setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+      #   return(o2)
+      # }
+      # te=Sys.time()
+      # message(' ',format(round(te-ts,2)))
+      # 
+      # cri=quantile(simus,0.95)
+      
+      for(i in 1:length(bb)){
+        b=bb[i]
+        cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'b =',b,'\n')
+        
+        ts=Sys.time()
+        MMEs=foreach(ii=1:M,.options.snow=opts,.packages='fdrtool') %dopar% {
+          x=RnG_mary_norm_un_N(n[j],m[j],b=b)
+          # if(b==0) return(MM(sort(x$x),alpha=alpha[k],epsilon=1))
+          o2=MM(x$x,x$y,N=x$N,setting='norm',alpha=alpha[k],epsilon=epsilon[l])
+          return(o2)
+        }
+        te=Sys.time()
+        message(' ',format(round(te-ts,2)))
+
+        ts=Sys.time()
+        simus=foreach(ii=1:M,.combine='rbind',.options.snow=opts2,.packages = c('foreach','fdrtool')) %:%
+            foreach(jj=1:M2,.combine='c',.packages='fdrtool') %dopar% {
+              MME=MMEs[[ii]]
+              theta=MME$theta
+              x=RnG_mary_norm_un_N(n[j],m[j],b=0)
+              o2=MM(x$x,x$y,N=x$N,setting='norm',alpha=alpha[k],epsilon=epsilon[l])
+              return(o2$llf[1])
+            }
+        te=Sys.time()
+        message(' ',format(round(te-ts,2)))
+
+        cri=apply(simus,1,quantile,0.95)
+        llr=sapply(1:M,function(ii) return(MMEs[[ii]]$llf[1]))
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M
+        #################
+        # ts=Sys.time()
+        # llr=foreach(ii=1:M,.combine='c',.options.snow=opts,.packages='fdrtool') %dopar% {
+        #   x=RnG_mary_norm_un_N(n[j],m[j],b=b)
+        #   o2=MM(x$x,x$y,N=x$N,setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+        #   return(o2)
+        # }
+        # te=Sys.time()
+        # message(' b=',b,' ',format(round(te-ts,2)))
+        # 
+        # betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb);close(pb2)
+stopCluster(cl)
+save(betas,file="MM_power_ML_unknownN_norm_mary_n=1000=2m.Rda")
+```
+
+## Power of MM & Spline - SL - same data
+```{r}
+M=1000;M2=1000
+bb=seq(0,4,.8)
+# bb=seq(0,0,1)
+n=c(100,200,500);m=n
+# alpha=c(0.5,1,2,5)
+alpha=c(.5) #exp-0.7;gamma-0.3
+epsilon=c(0.2) #0.2
+sp=c(-4.5,4.5);minp=0.05
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+betas_spline=betas
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n')
+      
+      ts=Sys.time()
+      simus=foreach(ii=1:M2,.combine='rbind',.options.snow=opts2,.packages=c('MASS','splines2','coneproj','fdrtool')) %dopar% {
+        x=RnG_mary_norm_un_N(n[j],m[j],b=0)
+        o2=MM(x$x,x$y,setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+        os=mle_bias(x$x,x$y,sp,minp)$llr
+        return(c(o2,os))
+      }
+      te=Sys.time()
+      message(' ',format(round(te-ts,2)))
+
+      cri=apply(simus,2,quantile,probs=0.95)
+      
+      for(i in 1:length(bb)){
+        b=bb[i]
+        
+        ts=Sys.time()
+        llr=foreach(ii=1:M,.combine='rbind',.options.snow=opts,.packages=c('MASS','splines2','coneproj','fdrtool')) %dopar% {
+          x=RnG_mary_norm_un_N(n[j],m[j],b=b)
+          o2=MM(x$x,x$y,N=x$N,setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1]
+          os=mle_bias(x$x,x$y,sp,minp)$llr
+          return(c(o2,os))
+        }
+        te=Sys.time()
+        message(' b=',b,' ',format(round(te-ts,2)))
+        
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,1]>cri[1])/M
+        betas_spline[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr[,2]>cri[2])/M
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb);close(pb2)
+stopCluster(cl)
+re=cbind(betas,betas_spline)
+save(re,file="Spline_MM_power_vary_n=m.Rda")
+```
+
+
+## Power of KS-test
+```{r}
+library(pbapply) 
+M=10000
+bb=seq(0,4,0.4)
+# n=c(10,20,50,100)
+n=c(200,300,400)
+betas_ks=matrix(nrow=length(bb),ncol=length(n))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    temp=pbsapply(1:M,function(nouse){
+      x=RnG_97_1(n[j],b=b)$x
+      ifelse(ks.test(x,pexp)$p.value<0.05,return(1),return(0))
+    })
+    betas_ks[i,j]=sum(temp)/M
+  }
+}
+# save(betas_ks,file="KS_power_200_400.Rda")
+# load("KS_power.Rda")
+```
+
+## Power of AD-test
+```{r}
+library(pbapply);library(DescTools)
+M=10000
+bb=seq(0,4,0.4)
+# n=c(10,20,50,100)
+n=c(200,300,400)
+betas_ad=matrix(nrow=length(bb),ncol=length(n))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    temp=pbsapply(1:M,function(nouse){
+      x=RnG_97_1(n[j],b=b)$x
+      ifelse(AndersonDarlingTest(x,"pexp")$p.value<0.05,return(1),return(0))
+    })
+    betas_ad[i,j]=sum(temp)/M
+  }
+}
+# save(betas_ad,file="AD_power_200_400.Rda")
+# load("AD_power.Rda")
+```
+
+<!-- ## Power of Chi-square-test -->
+<!-- ```{r} -->
+<!-- library(pbapply)  -->
+<!-- M=10000 -->
+<!-- bb=seq(0,4,0.2) -->
+<!-- n=c(10,20,50) -->
+<!-- breaks=seq(0,10,by=1);p_cut=diff(pexp(breaks)) -->
+<!-- betas_chisq=matrix(nrow=length(bb),ncol=length(n)) -->
+
+<!-- options(warn=-1) -->
+<!-- for(j in 3:length(n)){ -->
+<!--   for(i in 1:length(bb)){ -->
+<!--     b=bb[i] -->
+<!--     cat('b =',b,'n =',n[j],'\n') -->
+<!--     temp=pbsapply(1:M,function(nouse){ -->
+<!--       x=RnG_97_1(n[j],b=b)$x -->
+<!--       x_cut=table(cut(x,breaks=breaks)) -->
+<!--       ifelse(chisq.test(x_cut,p_cut,rescale.p=T)$p.value<0.05,return(1),return(0)) -->
+<!--     }) -->
+<!--     betas_chisq[i,j]=sum(temp)/M -->
+<!--   } -->
+<!-- } -->
+<!-- options(warn=0) -->
+<!-- # save(betas_chisq,file="KS_power.Rda") -->
+<!-- ``` -->
+
+## Power of test1
+```{r}
+library(pbapply)
+M=1000
+bb=seq(0,4,0.4)
+n=c(10,20,50,100)
+betas_test1_c_0.2=betas_test1_c_0.3=matrix(nrow=length(bb),ncol=length(n))
+
+power_of_P_test=function(setting='ux',N,C,bb){
+  if(!require("pbapply")) install.packages("pbapply")
+  library(pbapply)
+  op=pboptions(type="timer")
+  
+  if(setting=='ux'){ # set null distribution to be U[0,1], and w(x)~x
+    Fx=function(x){return(x)}
+    end_point=1
+    info='null=U[0,1], w(x)~x'
+    null_sample=function(n){return(runif(n))}
+    alter_sample=function(n){return((runif(n))^0.5)} # inversion method: F(x)=x^2=u -> x=u^0.5
+  }
+  
+  if(setting=='e971'){ # set null distribution to be exp(1), and w(x)~(10*x+1)/(10*x+1+b)
+    Fx=function(x){return(1-exp(-x))}
+    end_point=Inf
+    info='null=exp(1), w(x)~(10*x+1)/(10*x+1+b)'
+    null_sample=function(n){return(rexp(n,1))}
+    # alter_sample=function(n){return(RnG_97_1(n,b=b,theta=1)$x)} define later
+  }
+  
+  gamma3=function(x,err0,an,beta,n){ # use (4) to obtain omega_n_hat, and consequently estimate gamma
+    g1=1;g=Inf
+    while(abs(g1-g)>err0){
+      g=g1
+      omega_n_s=rep(NA,n)
+      omega_n_s[1]=(n+an)/(g*(1-Fx(x[1]))+beta) # H0: uniform dist F(x[1])
+      omega_n_s[2:n]=sapply(2:n,function(i){return((n-i+1)/(g*(1-Fx(x[i]))+beta))}) # i changes
+      omega_n=max(omega_n_s)/n
+      g1=1+an/n-beta*omega_n
+    }
+    return(g1)
+  }
+  
+  # gamma3(x=sort(runif(20)),err0=0.001,an=0.3*sqrt(20),beta=0.3/sqrt(20),n=20)
+  
+  # dyn.load('gamma3.so')
+  # gamma3_f=function(x,err0,an,beta,n){.Fortran("gamma3",x=x,err0=err0,an=an,beta=beta,n=n,g1=1)$g1}
+  # gamma3_f(x=sort(runif(20)),err0=0.001,an=0.3*sqrt(20),beta=0.3/sqrt(20),n=20)
+  
+  est3=function(x,g,an,beta,i,n){ # estimate each omega
+    outs=rep(NA,n-i+1)
+    if(i>1) an=0 # no need to add an
+    if(i==n) return(list(i0=n,out=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)/n))
+    outs[1:(n-i)]=sapply(i:(n-1),function(j){return((j-i+1+an)/(g*(Fx(x[j+1])-Fx(x[i]))))}) # j changes
+    outs[n-i+1]=(n-i+1+an)/(g*(1-Fx(x[i]))+beta)
+    outn=min(outs)
+    i0=which(outs==outn)+i-1 # i0 is the index of n1+n2+n3+...+n_i
+    ## Note: the reason of returning i0 is that: if i<k<j reaches the max(min(.)) for k, 
+    ## then this couple of (i,j) also reaches the max(min(.)) for any k<=j. (The property of the greatest convex minorant.)
+    ## That's why we use i0 to record the position of the j reaching max(min(.)) for k.
+    return(list(i0=i0,out=outn/n)) # out is the estimated omega_k
+  }
+  
+  pmle3=function(x,n,err0,an,beta){ # estimate each omega_hats
+    omegas=index=vector()
+    g=gamma3(x,err0,an,beta,n) # estimate gamma
+    iout=0;i=1;sum=0
+    while(i<=n){
+      iout=iout+1
+      result=est3(x,g,an,beta,i,n) # estimate omegas[k]=omega_k and index i0
+      i0=result[[1]];omegas[iout]=result[[2]]
+      sum=sum+omegas[iout]*(Fx(x[i0+1])-Fx(x[i])) # measure the appropriation of our estimation
+      index[iout]=i0 # index[i] = n1+n2+n3+...+n_i
+      i=i0+1 # continue with the next group
+      #cat('omegas:',omegas,'index:',index,'i0:',i0,'i:',i,'iout:',iout,'\n')
+    }
+    if(abs(1-sum)>1e-4) warning("1 =/= sum =",sum)
+    return(list(omegas=omegas,index=index,iout=iout))
+  }
+  
+  f=function(nouse=NA,n=150,err0=0.00001,c=0.3,dist){ # function to generate test statistic for null/alternative
+    # cat(info,', n=',n,', c=',c,sep='')
+    an=c*sqrt(n) # an=alpha*n, i.e., alpha=c/sqrt(n)=beta
+    beta=c/sqrt(n)
+    x=c(sort(dist(n)),end_point) # x[0]=0, x[n+1]=1 ###
+    result=pmle3(x,n,err0,an,beta) # estimate index[i] = n1+n2+n3+...+n_i, omegas[k]=omega_hat_k, iout=m
+    omegas=result[[1]];index=result[[2]];iout=result[[3]]
+    p=an*log(omegas[1])-beta*n*(omegas[iout]-1) # penalty term
+    rt=index[1]*log(omegas[1]) # non-penalty term
+    if(iout>1) for(i in 2:iout) rt=rt+(index[i]-index[i-1])*log(omegas[i])
+    return(p+rt)
+  }
+  
+  g=function(N,C){ # function to compute critical values (1000 simulations for each setting)
+    pboptions(nout=1000) # number of independent trials
+    M=matrix(nrow=length(N),ncol=length(C))
+    cat('Computing critical values using the null distribution:\n')
+    for(i in 1:length(N)){
+      for(j in 1:length(C)){
+        cat(info,', n=',N[i],', c=',C[j],sep='')
+        M[i,j]=as.numeric(quantile(pbsapply(1:1000,f,n=N[i],c=C[j],dist=null_sample),0.95))
+      }
+    }
+    rownames(M)=N
+    colnames(M)=C
+    cat('critical values:\n')
+    print(M)
+    return(M)
+  }
+
+  g2=function(N,C){ # function to compute power (1000 simulations for each setting)
+    critics=g(N,C)
+    cat('Computing powers using the alternative distribution:\n')
+    pboptions(nout=M)
+    for(j in 1:length(N)){
+      for(i in 1:length(bb)){
+        b=bb[i]
+        alter_sample=function(n){return(RnG_97_1(n,b=b,theta=1)$x)}
+        cat('b =',b,'n =',N[j],'\n')
+        betas_test1_c_0.2[i,j]=sum(pbsapply(1:M,f,n=N[j],c=0.2,dist=alter_sample)>critics[j,1])/M
+        betas_test1_c_0.3[i,j]=sum(pbsapply(1:M,f,n=N[j],c=0.3,dist=alter_sample)>critics[j,1])/M
+      }
+    }
+    cat('power:\n')
+    print(list(betas_test1_c_0.2,betas_test1_c_0.3))
+  }
+  return(g2(N,C))
+}
+
+power_of_P_test('e971',n,c(0.2,0.3),bb)
+
+# save(betas_test1_c_0.2,file="Test1_power_c_0.2.Rda")
+# load("Test1_power_c_0.2.Rda")
+# save(betas_test1_c_0.3,file="Test1_power_c_0.3.Rda")
+# load("Test1_power_c_0.3.Rda")
+```
+
+
+## Power of parametric test
+```{r}
+LR=function(x){
+  n=length(x)
+  theta_hat_0=1/mean(x)
+  neg_log_likelihood=function(parameter){
+    theta=parameter[1];b=parameter[2]
+    if(theta<0 || b<0) return(NA)
+    int=integrate(function(t){theta*exp(-theta*t)*(10*t+1)/(10*t+1+b)},0,Inf)$value
+    log_likelihood=n*log(theta)-theta*sum(x)+sum((10*x+1)/(10*x+1+b))-n*log(int)
+    return(-log_likelihood)
+  }
+  mle=optim(c(1e-4,0),neg_log_likelihood)#,lower=c(0,0),upper=c(Inf,Inf))
+  return(mle)
+  # return(lr)
+}
+
+library(pbapply) 
+M=1000
+bb=seq(0,4,0.4)
+n=c(10,20,50,100)
+betas_pa=matrix(nrow=length(bb),ncol=length(n))
+for(j in 1:length(n)){
+  for(i in 1:length(bb)){
+    b=bb[i]
+    cat('b =',b,'n =',n[j],'\n')
+    temp=pbsapply(1:M,function(nouse){
+      x=RnG_97_1(n[j],b=b)$x
+      ifelse(ks.test(x,pexp)$p.value<0.05,return(1),return(0))
+    })
+    betas_pa[i,j]=sum(temp)/M
+  }
+}
+```
+
+
+## Load Power of MM
+```{r}
+bb=seq(0,4,0.2) #
+n=c(10,20,50) # n=100
+all_betas=matrix(0,nrow=length(bb),ncol=length(n))
+files=dir('./MM_power/',full.names=TRUE) 
+# index=c(1,seq(3,83,4))
+# files=files[index]
+for(i in files[-1]){
+  load(i)
+  betas[is.na(betas)]=0
+  all_betas=all_betas+betas
+}
+# save(all_betas,file="./MM_power/add_up.Rda")
+# load("./MM_power/add_up.Rda")
+# load('MM_power/MM_power_b=0_n=10.Rda')
+# load('AUMPUT_power.Rda')
+```
+
+
+## Load Power of MM_with_penalty
+```{r}
+bb=seq(0,4,0.2) #
+n=c(10,20,50) # n=100
+all_betas_97_99=matrix(0,nrow=length(bb),ncol=length(n))
+files=dir('./MM_power_97_99/',full.names=TRUE)
+# index=c(1,seq(3,83,4))
+# files=files[index]
+for(i in files[-1]){
+  load(i)
+  betas[is.na(betas)]=0
+  all_betas_97_99=all_betas_97_99+betas
+}
+# save(all_betas_97_99,file="./MM_power_97_99/add_up_97_99.Rda")
+# load("./MM_power/add_up_97_99.Rda")
+```
+
+## Power Curves for MM
+```{r}
+# par(bg = "white")
+# windowsFonts(A = windowsFont("Times New Roman"))
+plot(1,type="n",ylab='power',xlab='b',xlim=c(0, max(bb)),ylim=c(0,1),family="A",
+     main='v(x)=(10*x+1)/(10*x+1+b)') #, N=60, alpha=0.03, beta=0.3')
+# rect(par("usr")[1], par("usr")[3],
+#      par("usr")[2], par("usr")[4],
+#      col = "aliceblue")
+for(i in 1:ncol(betas)){
+  lines(bb,all_betas[,i],pch=18,col=heat.colors(5)[i],type="b",lty=1)
+  #lines(bb,betas2[,i],pch=19,col=heat.colors(5)[i],type="b",lty=2)
+}
+abline(h=0.05,lty=2)
+legend(max(bb)/2,0.5,legend=paste('MM n =',n),
+       col=heat.colors(5)[1:3],lty=1,pch=18,text.font=10,bg="#f7f7f7")
+# legend(max(bb)/2,0.5,legend=c(as.vector(outer(c("  MM  ","AUMPUT"),n,paste,sep="  n="))),
+#        col=rep(heat.colors(5)[1:3],each=2),lty=1:2,pch=18:19,text.font=10,bg="#f7f7f7")
+```
+
+## Power Curves for MM & KS & AD (& test1?)
+```{r}
+bb=seq(0,4,0.4)
+n=c(10,20,50,100)
+load('2_MM_power.Rda')
+load('KS_power.Rda')
+load('AD_power.Rda')
+plot(1,type="n",ylab='power',xlab='b',xlim=c(0,max(bb)),ylim=c(0,1),family="A",
+     main='v(x)=(10*x+1)/(10*x+1+b)*0.8') #, N=60, alpha=0.03, beta=0.3')
+# rect(par("usr")[1], par("usr")[3],
+#      par("usr")[2], par("usr")[4],
+#      col = "aliceblue")
+for(i in 1:ncol(betas)){
+  lines(bb,betas[,i],col=heat.colors(5)[i],type="b",lty=1)
+  lines(bb,betas_ks[,i],col=heat.colors(5)[i],type="b",lty=2)
+  lines(bb,betas_ad[,i],col=heat.colors(5)[i],type="b",lty=3)
+}
+abline(h=0.05,lty=2)
+# legend(max(bb)/2,0.5,legend=c(as.vector(outer(c("MM","KS"),n,paste,sep="  n="))),
+#        col=rep(heat.colors(5)[1:3],each=2),lty=1:2,pch=18:19,text.font=10,bg="#f7f7f7")
+```
+
+## large_n Power Curves for MM & KS & AD (& test1?)
+```{r}
+library(viridis)
+bb=seq(0,4,0.4)
+n=c(200,300,400)
+load('2_MM_power_large_n.Rda')
+load('KS_power_200_400.Rda')
+load('AD_power_200_400.Rda')
+plot(1,type="n",ylab='power',xlab='b',xlim=c(0,max(bb)),ylim=c(0,1),family="A",
+     main='v(x)=(10*x+1)/(10*x+1+b)*0.8') #, N=60, alpha=0.03, beta=0.3')
+# rect(par("usr")[1], par("usr")[3],
+#      par("usr")[2], par("usr")[4],
+#      col = "aliceblue")
+for(i in 1:ncol(betas_large_n)){
+  lines(bb,betas_large_n[,i],col=magma(5)[i],type="b",lty=1)
+  lines(bb,betas_ks[,i],col=magma(5)[i],type="b",lty=2)
+  lines(bb,betas_ad[,i],col=magma(5)[i],type="b",lty=3)
+}
+abline(h=0.05,lty=2)
+# legend(max(bb)/2,0.5,legend=c(as.vector(outer(c("MM","KS"),n,paste,sep="  n="))),
+#        col=rep(heat.colors(3)[1:3],each=2),lty=1:2,pch=18:19,text.font=10,bg="#f7f7f7")
+```
+
+## Combined Power Curves
+```{r}
+library(viridis)
+bb=seq(0,4,0.4)
+n=c(10,20,50,100) # n=c(200,300,400)
+load('2_MM_power.Rda')
+load('KS_power.Rda')
+load('AD_power.Rda')
+plot(1,type="n",ylab='power',xlab='b',xlim=c(0,max(bb)),ylim=c(0,1),family="A",
+     main='v(x)=(10*x+1)/(10*x+1+b)*0.8') #, N=60, alpha=0.03, beta=0.3')
+# rect(par("usr")[1], par("usr")[3],
+#      par("usr")[2], par("usr")[4],
+#      col = "aliceblue")
+for(i in 1:ncol(betas)){
+  lines(bb,betas[,i],col=magma(7)[i],type="b",lty=1)
+  lines(bb,betas_ks[,i],col=magma(7)[i],type="b",lty=2)
+  lines(bb,betas_ad[,i],col=magma(7)[i],type="b",lty=3)
+}
+load('2_MM_power_large_n.Rda')
+load('KS_power_200_400.Rda')
+load('AD_power_200_400.Rda')
+for(i in 1:ncol(betas_large_n)){
+  lines(bb,betas_large_n[,i],col=magma(7)[i+3],type="b",lty=1)
+  lines(bb,betas_ks[,i],col=magma(7)[i+3],type="b",lty=2)
+  lines(bb,betas_ad[,i],col=magma(7)[i+3],type="b",lty=3)
+}
+abline(h=0.05,lty=2)
+```
+
+## Power Curves for MM & MM_with_penalty
+```{r}
+plot(1,type="n",ylab='power',xlab='b',xlim=c(0, max(bb)),ylim=c(0,1),family="A",
+     main='v(x)=(10*x+1)/(10*x+1+b)') #, N=60, alpha=0.03, beta=0.3')
+# rect(par("usr")[1], par("usr")[3],
+#      par("usr")[2], par("usr")[4],
+#      col = "aliceblue")
+for(i in 1:ncol(all_betas)){
+  lines(bb,all_betas[,i],col=heat.colors(5)[i],type="l",lty=1)
+  lines(bb,all_betas_97_99[,i],col=heat.colors(5)[i],type="l",lty=2)
+}
+abline(h=0.05,lty=2)
+legend(max(bb)/2,0.5,legend=c(as.vector(outer(c("           MM              ","MM_with_penalty"),n,paste,sep="  n="))),col=rep(heat.colors(5)[1:3],each=2),lty=1:2,pch=18:19,text.font=10,bg="#f7f7f7")
+```
+
+## Power of meta analysis
+```{r}
+M=50;M2=500;s=20;r=1/1000
+bb=seq(0,4,1)
+# bb=seq(0,0,1)
+n=c(100000)
+# alpha=c(0.5,1,2,5)
+alpha=c(.5)
+epsilon=c(0.2)
+betas=matrix(nrow=length(bb)*length(n),ncol=length(alpha)*length(epsilon))
+rownames(betas)=apply(expand.grid(paste0('b=',bb),paste0('n=',n)),1,paste,collapse=";")
+colnames(betas)=apply(expand.grid(paste0('a=',alpha),paste0('e=',epsilon)),1,paste,collapse=";")
+# betas2=betas
+
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+pb2=txtProgressBar(max=M2,style=3)
+  progress2=function(n) setTxtProgressBar(pb2,n)
+  opts2=list(progress=progress2)
+t1=Sys.time()
+cat('M =',M,'M2 =',M2,'\n')
+for(j in 1:length(n)){
+  for(l in 1:length(epsilon)){
+    for(k in 1:length(alpha)){
+      cat('n =',n[j],'alpha =',alpha[k],'epsilon =',epsilon[l],'\n')
+      
+      ts=Sys.time()
+      simus=foreach(ii=1:M2,.combine='c',.options.snow=opts2) %dopar% {
+        x=RnG_97_2_norm_un_N(n[j],b=0)
+        o2=mean(sapply(1:s,function(nouse){return(MM(sort(sample(x$x,n[j]*r)),setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1])}))
+        return(o2)
+      }
+      te=Sys.time()
+      message(' ',format(round(te-ts,2)))
+      
+      cri=quantile(simus,0.95)
+      
+      for(i in 1:length(bb)){
+        b=bb[i]
+        
+        ts=Sys.time()
+        llr=foreach(ii=1:M,.combine='c',.options.snow=opts) %dopar% {
+          x=RnG_97_2_norm_un_N(n[j],b=b)
+          o2=mean(sapply(1:s,function(nouse){return(MM(sort(sample(x$x,n[j]*r)),setting='norm',alpha=alpha[k],epsilon=epsilon[l])$llf[1])}))
+          return(o2)
+        }
+        te=Sys.time()
+        message(' b=',b,' ',format(round(te-ts,2)))
+        
+        betas[(j-1)*length(bb)+i,(l-1)*length(alpha)+k]=sum(llr>cri)/M
+      }
+    }
+  }
+}
+t2=Sys.time()
+message(format(round(t2-t1,2)))
+close(pb);close(pb2)
+stopCluster(cl)
+save(betas,file="MM_power_unknownN_MA_norm_n=100000_s=20_r=1000_972.Rda")
+```
+
+## est vs gcmlcm vs pava
+```{r}
+library("fdrtool")
+x = 1:20
+y = cumsum(rexp(20))
+plot(x, y, type="l", lty=3, main="GCM (red) and LCM (blue)")
+points(x, y)
+
+# greatest convex minorant (red)
+gg = gcmlcm(x,y)
+lines(gg$x.knots, gg$y.knots, col=2, lwd=2)
+
+# least concave majorant (blue)
+ll = gcmlcm(x,y, type="lcm")
+lines(ll$x.knots, ll$y.knots, col=4, lwd=2)
+
+est1=function(a,b){
+  n=length(a)
+    M=matrix(nrow=n,ncol=n)
+    for(i in 1:n) for(j in i:n) M[i,j]=sum(a[i:j])/sum(b[i:j])
+    
+    v=rep(Inf,n)
+    v[1]=min(M[1,]);v[n]=max(M[,n])
+    for(k in 2:(n-1)) v[k]=max(apply(M[1:k,k:n],1,min))
+    return(list(v=v,v_tilde=unique(v),index=match(unique(v),v),M=M)) ###### shortenable
+}
+
+a=rnorm(6);b=rexp(6)
+est1(a,b)
+u=gcmlcm(cumsum(c(0,b)),cumsum(c(0,b)))
+
+plot(cumsum(1:5),cumsum(3:7))
+
+
+# speed of gcmlcm
+n=1e2
+k=1e3
+t1=Sys.time()
+for(i in 1:k){
+  a=rep(1,n);b=rnorm(n)
+  u=gcmlcm(cumsum(c(0,a)),cumsum(c(0,b)))
+  index=diff(match(u$x.knots,cumsum(c(0,a)))-1)
+  v=rep(u$slope.knots,index)
+}
+t2=Sys.time()
+message('gcmlcm: ',format(round(t2-t1,2)))
+
+t1=Sys.time()
+for(i in 1:k){
+  a=rep(1,n);b=rnorm(n)
+  u=est1(b,a)$v
+}
+t2=Sys.time()
+message('estfun: ',format(round(t2-t1,2)))
+
+# pava?
+library(isotone)
+gpava(cumsum(c(0,a)),cumsum(c(0,b)))
+```
+
+## some images for pre
+```{r}
+library(ggplot2)
+x=seq(0,8,0.001)
+y=exp(-x)
+z=x*exp(-x)/2
+d=as.data.frame(cbind(x,y,z))
+ggplot(d)+
+  geom_line(aes(x,y),size=1)+
+  geom_line(aes(x,z),size=2,color='blue')+
+  theme_bw()+
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text=element_text(size=rel(1.5)))
+  
+```
+
+## Application
+```{r}
+load('app/astro_0510.Rda')
+# plot(density(sort(exp(na.omit(dt$M)),TRUE)[-c(1:10000)]))
+
+L_sd=10^((na.omit(dt$M)+19.7-5*log(5,10))/-2.5) #L/L*
+  # L_sd=10^((na.omit(dt$M))/-2.5) #L/L*
+
+# plot(density(sort(L_sd,TRUE)[-c(1:500)]),xlim=c(0,1000))
+
+a=sort(L_sd,TRUE)[-c(1:500)] #exclude largest L_sd
+
+# parameters_of_Gamma=function(x){
+#   u=mean(x);v=var(x)
+#   beta=u/v
+#   alpha=u^2/v
+#   return(c(alpha=alpha,beta=beta))
+# }
+# para=parameters_of_Gamma(L_sd_el)
+# # plot(density(L_sd_el),xlim=c(0,1000))
+# # lines(density(rgamma(1e6,para[1],para[2])),col='red')
+# 
+# a=sort(L_sd_el)
+
+
+### Using Spline
+sp=c(0,5000);minp=.01
+u=mle_bias(a,c(),sp,minp)
+plot(u$xp,u$phat,type='l',lwd=3,ylim=c(0,1),ylab='probability of sampling',xlim=c(0,5000),xlab='constant * L')
+
+### Using MM
+result=MM(a,setting='gamma',alpha=0.5,epsilon=0.1)
+save(result,file='app_result_full_ConstantMultiplied.Rda')
+result2=MM(a,setting='norm',alpha=0.5,epsilon=0.2)
+save(result2,file='app_result_full_null=norm.Rda')
+
+M=1000
+library(doSNOW)
+library(foreach)
+library(doParallel)
+registerDoSNOW(cl<-makeCluster(12))
+pb=txtProgressBar(max=M,style=3)
+  progress=function(n) setTxtProgressBar(pb,n)
+  opts=list(progress=progress)
+t1=Sys.time()
+simus=foreach(ii=1:M,.options.snow=opts,.packages='fdrtool',
+              .combine='c') %dopar% {
+  x=RnG_UL(n=length(a),shape=result$theta[1],rate=result$theta[2])
+  return(MM(x$x,setting='gamma',alpha=0.5,epsilon=0.2)$llf[1])
+                }
+t2=Sys.time()
+message(format(round(t2-t1,2)),'    ',t2)
+close(pb)
+stopCluster(cl)
+save(simus,file='app_null_simu_M=1000.Rda')
+
+load('app_null_simu_M=1000.Rda')
+load('app_result_full.Rda')
+sum(simus>result$llf[1])/length(simus) # p-value
+
+######################## ggplot
+library(ggplot2)
+
+# Define the data for the gamma density function
+x_vals <- 1:500
+gamma_density <- dgamma(x_vals, shape = result$theta[1], rate = result$theta[2])
+
+# Create data frames for ggplot
+data_gamma <- data.frame(x = x_vals, y = gamma_density, Type = "Estimated True Density")
+data_observed <- data.frame(x = density(a)$x, y = density(a)$y, Type = "Observed Density")
+
+# Combine the data frames
+data <- rbind(data_gamma, data_observed)
+
+# Plot using ggplot with legend
+ggplot(data, aes(x = x, y = y, color = Type)) +
+  geom_line(size = 1) +
+  labs(x = 'constant * L', y = 'density') +
+  ggtitle('Density Plot') +
+  theme_minimal() +
+  xlim(0, 500) +  # Set x-axis limit from 0 to 500
+  scale_color_manual(values = c("Estimated True Density" = "blue", "Observed Density" = "black")) +
+  theme(legend.position = c(0.85, 0.85))  # Place legend at top-right using coordinates
+
+
+
+#########################
+plot(1:500,dgamma(1:500,shape=result$theta[1],rate=result$theta[2]),col='blue',type='l',xlab='constant * L',ylab='density')
+lines(density(a))
+legend('topright',legend=c('estimated true density function','observed density'),lty=1,col=c('blue','black'))
+
+plot(sort(a),result$v,type='l',xlim=c(1,900),xlab='constant * L',ylab='probability of observing')
+
+plot(density(simus),main=paste0('Lambda_hat = ',round(result$llf,2)))
+
+
+theta=result2$theta
+plot(1:500,dnorm(1:500,mean=-0.5*theta[2]/theta[1],sd=sqrt(-0.5/theta[1])),col='blue',type='l')
+lines(density(a))
+
+plot(sort(a),result2$v,type='l')
+# i=0
+# repeat{
+#   inde=duplicated(a)
+#   if(!sum(inde)) break
+#   i=i+1
+#   a[inde]=a[inde]+1e-8
+# }
+
+# Sampling estimates 
+# M=10000 # number of sampling
+# M2=1000 # number of sample size
+# M3=10000 # number of simulation size for null dist
+# library(doSNOW)
+# library(foreach)
+# library(doParallel)
+# registerDoSNOW(cl<-makeCluster(12))
+# pb=txtProgressBar(max=M,style=3)
+#   progress=function(n) setTxtProgressBar(pb,n)
+#   opts=list(progress=progress)
+# pb2=txtProgressBar(max=M3,style=3)
+#   progress2=function(n) setTxtProgressBar(pb2,n)
+#   opts2=list(progress=progress2)
+# t1=Sys.time()
+# results=foreach(ii=1:M,.errorhandling='remove',.options.snow=opts,
+#                 .packages='fdrtool',.combine='rbind') %dopar% {
+#   a_sampled=sample(a,M2)
+#   o2=MM(a_sampled,setting='gamma',alpha=0.5,epsilon=0.2)
+#   return(c(o2$theta,o2$llf[1]))
+#                 }
+# t2=Sys.time()
+# message(format(round(t2-t1,2)),'    ',t2)
+# 
+# arg_hats=apply(results,2,median) # lapply(x, `[[`, 1)
+# t1=Sys.time()
+# simus=foreach(ii=1:M3,.errorhandling='remove',.options.snow=opts,
+#                 .packages='fdrtool',.combine='c') %dopar% {
+#   x=RnG_97_1_gamma_un_N(n=M2,shape=arg_hats[1],rate=arg_hats[2])
+#   return(MM(x$x,setting='gamma',alpha=0.5,epsilon=0.2)$llf[1])
+#                 }
+# t2=Sys.time()
+# message(format(round(t2-t1,2)),'    ',t2)
+# close(pb);close(pb2)
+# stopCluster(cl)
+# 
+# sum(simus>arg_hats[length(arg_hats)])/length(simus) # p-value
+# 
+# l=list(arg_hats=arg_hats,simus=simus)
+# save(l,file='app_result_M=1e4_M2=1e3_M3=1e4.Rda')
+```
+
+## Decimal problem
+```{r}
+library(Rmpfr)
+library(fdrtool)
+n=100
+a=runif(100)
+b=runif(n)
+b11=mpfr(c(0,b),64)
+qiguai11=cumsum(b11)
+u=gcmlcm(qiguai11,mpfr(cumsum(c(0,a)),64))
+```

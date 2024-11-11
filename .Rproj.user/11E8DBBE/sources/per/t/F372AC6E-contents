@@ -1,0 +1,54 @@
+# verify the normal approximation
+f=function(no,n=10,theta=1){#function to generate a sample output
+  x=rexp(n,theta)
+  u=mean(log(x))-log(mean(x))
+  v=log(mean(x))
+  return(c(u,v))
+}
+out=t(sapply(1:10000,f,theta=1,n=1000))
+colMeans(out)
+cov(out*sqrt(1000))
+
+
+# Bootstrap algorithm to compute the p-value
+x=rexp(10,1)
+tx=mean(log(x))-log(mean(x))
+g=function(no,x){# generate a Bootstrap sample output
+  y=sample(x,length(x),replace=TRUE)
+  return((mean(log(y))-log(mean(y)))>tx)
+}
+N=1000
+sum(sapply(1:N,g,x=x))/N
+
+
+# power plots
+h=function(alpha=0.05,n=10,theta=1){#simulate the critical value at
+                #significance level alpha, sample size n and parameter theta
+  N=100000
+  N_sampels=sapply(1:N,function(no){
+    x=rexp(n,theta)
+    return(mean(log(x))-log(mean(x)))
+  })
+  return(quantile(N_sampels,1-alpha))
+}
+k=function(beta,alpha=0.05,n=10,theta=1){#simulate the power at beta, with
+                #significance level alpha, sample size n and parameter theta
+  N=100000
+  N_sampels=sapply(1:N,function(no){
+    x=rgamma(n,shape=beta+1,scale=1/theta)
+    return(mean(log(x))-log(mean(x)))
+  })
+  c=h(alpha,n,theta)
+  return(sum(N_sampels>c)/N)
+}
+#betas=c(0,0.1,0.2,0.5,1,5)
+betas=seq(0,5,0.5)
+par(mfrow=c(3,3))
+for(i in c(1,2,5)){#change theta
+  for(j in c(5,10,20)){#change n
+    plot(betas,sapply(betas,k,theta=i,n=j),type='l',ylab='power',
+         main=paste("theta = ",i,", n = ",j,sep=''))
+    abline(h=0.05,lty=2)
+  }
+}
+
