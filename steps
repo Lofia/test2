@@ -5,3 +5,7 @@ document()
 check()
 
 # terminal
+source ~/.bashrc
+git pull
+git commit -m "update"
+git push
