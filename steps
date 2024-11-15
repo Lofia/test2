@@ -9,3 +9,8 @@ source ~/.bashrc
 git pull
 git commit -m "update"
 git push
+
+# check
+git status
+git branch -v
+git remote -v
