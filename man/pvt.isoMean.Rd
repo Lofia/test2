@@ -17,3 +17,6 @@ estimated gcm
 \description{
 pvt.isoMean
 }
+\examples{
+pvt.isoMean(rnorm(10),rep(1,10))
+}

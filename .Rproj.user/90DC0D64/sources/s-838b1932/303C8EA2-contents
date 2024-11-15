@@ -4267,13 +4267,13 @@ ggplot(d)+
 load('app/astro_0510.Rda')
 # plot(density(sort(exp(na.omit(dt$M)),TRUE)[-c(1:10000)]))
 
-L_sd=10^((na.omit(dt$M)+19.7-5*log(5,10))/-2.5) #L/L*
-  # L_sd=10^((na.omit(dt$M))/-2.5) #L/L*
-
+# L_sd=10^((na.omit(dt$M)+19.7-5*log(5,10))/-2.5) #L/L*
+L_sd=10^((na.omit(dt$M))/-2.5) #L/L*
+L_sd_corrected=10^((na.omit(dt$M)-dt$K)/-2.5)
 # plot(density(sort(L_sd,TRUE)[-c(1:500)]),xlim=c(0,1000))
 
 a=sort(L_sd,TRUE)[-c(1:500)] #exclude largest L_sd
-
+a_corrected=sort(L_sd_corrected,TRUE)[-c(1:500)]
 # parameters_of_Gamma=function(x){
 #   u=mean(x);v=var(x)
 #   beta=u/v
@@ -4294,7 +4294,7 @@ plot(u$xp,u$phat,type='l',lwd=3,ylim=c(0,1),ylab='probability of sampling',xlim=
 
 ### Using MM
 result=MM(a,setting='gamma',alpha=0.5,epsilon=0.1)
-save(result,file='app_result_full_ConstantMultiplied.Rda')
+save(result,file='app_result_full_ConstantMultiplied_new.Rda')
 result2=MM(a,setting='norm',alpha=0.5,epsilon=0.2)
 save(result2,file='app_result_full_null=norm.Rda')
 
@@ -4307,16 +4307,16 @@ pb=txtProgressBar(max=M,style=3)
   progress=function(n) setTxtProgressBar(pb,n)
   opts=list(progress=progress)
 t1=Sys.time()
-simus=foreach(ii=1:M,.options.snow=opts,.packages='fdrtool',
+simus=foreach(ii=1:M,.options.snow=opts,.packages=c('fdrtool','test2'),
               .combine='c') %dopar% {
-  x=RnG_UL(n=length(a),shape=result$theta[1],rate=result$theta[2])
+  x=RnG_UL(n=length(a),rnull=rgamma,shape=result$theta[1],rate=result$theta[2])
   return(MM(x$x,setting='gamma',alpha=0.5,epsilon=0.2)$llf[1])
                 }
 t2=Sys.time()
 message(format(round(t2-t1,2)),'    ',t2)
 close(pb)
 stopCluster(cl)
-save(simus,file='app_null_simu_M=1000.Rda')
+save(simus,file='app_null_simu_M=1000_ConstantMultiplied_new.Rda')
 
 load('app_null_simu_M=1000.Rda')
 load('app_result_full.Rda')
@@ -4330,7 +4330,7 @@ x_vals <- 1:500
 gamma_density <- dgamma(x_vals, shape = result$theta[1], rate = result$theta[2])
 
 # Create data frames for ggplot
-data_gamma <- data.frame(x = x_vals, y = gamma_density, Type = "Estimated True Density")
+data_gamma <- data.frame(x = x_vals, y = gamma_density, Type = "Estimated Bias Corrected Density")
 data_observed <- data.frame(x = density(a)$x, y = density(a)$y, Type = "Observed Density")
 
 # Combine the data frames
@@ -4349,7 +4349,12 @@ ggplot(data, aes(x = x, y = y, color = Type)) +
 
 
 #########################
-plot(1:500,dgamma(1:500,shape=result$theta[1],rate=result$theta[2]),col='blue',type='l',xlab='constant * L',ylab='density')
+xvals=c(seq(1,1e5,by=1e2),seq(1e6,1e10,by=1e6))
+plot(density(a),xlab='constant * L',ylab='density')
+lines(xvals,dgamma(xvals,shape=result$theta[1],rate=result$theta[2]),col='blue',type='l')
+legend('topright',legend=c('estimated true density function','observed density'),lty=1,col=c('blue','black'))
+
+plot(xvals,dgamma(xvals,shape=result$theta[1],rate=result$theta[2]),col='blue',type='l',xlab='constant * L',ylab='density')
 lines(density(a))
 legend('topright',legend=c('estimated true density function','observed density'),lty=1,col=c('blue','black'))
 

@@ -1,5 +1,7 @@
 library(devtools);library(usethis)
-use_r()
+use_r('xxx.R')
 command+option+shift+R
 document()
 check()
+
+# terminal

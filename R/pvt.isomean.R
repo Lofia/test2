@@ -8,6 +8,8 @@
 #' @import fdrtool
 #'
 #' @examples
+#' pvt.isoMean(rnorm(10),rep(1,10))
+
 pvt.isoMean = function(y, w)
 {
   # Input:	y: measured values in a regression setting
