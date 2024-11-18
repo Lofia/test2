@@ -7,7 +7,7 @@ check()
 # terminal
 source ~/.bashrc
 git pull
-git commit -m "update"
+git commit -a -m "update"
 git push
 
 # check

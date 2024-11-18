@@ -156,6 +156,7 @@ MM=function(x,y=c(),N=Inf,setting='exp',alpha=0,epsilon=0,penalty=FALSE,auto_gcm
     }
     compute_llf=function(x,y,theta,v){
       xy=c(x,y)
+      if(theta[1]<=1) return(llf_all=-Inf)
       if(sum(theta<1e-9)) theta[theta<1e-9]=1e-9
       p=compute_p(x,theta)
       theta0=compute_theta0(x,y)
