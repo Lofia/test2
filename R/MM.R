@@ -321,7 +321,7 @@ MM=function(x,y=c(),N=Inf,setting='exp',alpha=0,epsilon=0,penalty=FALSE,auto_gcm
     #     'v:',v$v_tilde,v$index,'\n')
     if(auto_bisection){
       if(length(theta0)>1){
-        out=optim(theta0,function(u)
+        out=optim(theta0+1,function(u)
           return(compute_llf(x,y,u,v$v)[1]),control=list(fnscale=-1),gr=NULL)
         # cat('\n out')
         theta=list(theta=out$par,iter=out$value,fmid=out$convergence)
