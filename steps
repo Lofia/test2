@@ -1,3 +1,5 @@
+# https://jthomasmock.github.io/pkg-building/#153
+
 library(devtools);library(usethis)
 use_r('xxx.R')
 command+option+shift+R
