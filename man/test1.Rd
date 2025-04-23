@@ -31,7 +31,6 @@ Performs the P-test in the paper "(1999) Testing uniformity versus a monotone de
   Calculates a test statistic (Lambda) and a p-value.
 }
 \examples{
-\dontrun{
 set.seed(123)
 # Data close to uniform
 uniform_data <- sort(runif(50))
@@ -42,7 +41,6 @@ print(test_uniform)
 monotone_data <- sort(rbeta(50, 2, 1))
 test_monotone <- test1(monotone_data, c = 0.3, B = 1000)
 print(test_monotone)
-}
 
 }
 \references{

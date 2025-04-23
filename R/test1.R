@@ -22,7 +22,6 @@
 #' @import stats
 #'
 #' @examples
-#' \dontrun{
 #' set.seed(123)
 #' # Data close to uniform
 #' uniform_data <- sort(runif(50))
@@ -33,7 +32,6 @@
 #' monotone_data <- sort(rbeta(50, 2, 1))
 #' test_monotone <- test1(monotone_data, c = 0.3, B = 1000)
 #' print(test_monotone)
-#' }
 #'
 #' @references Jiayang Sun. Michael Woodroofe. "Testing uniformity versus a monotone density."
 #' Ann. Statist. 27 (1) 338 - 360, February 1999. https://doi.org/10.1214/aos/1018031114

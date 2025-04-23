@@ -16,3 +16,8 @@ git push
 git status
 git branch -v
 git remote -v
+
+# other
+build_manual()
+build_site()
+load_all()
