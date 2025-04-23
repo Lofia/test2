@@ -12,7 +12,10 @@ test1(x, setting = "u", c = 0.3, B = 1000)
 \item{setting}{character. Specifies the null distribution. Currently only
 `'u'` (Uniform) is supported (default 'u').}
 
-\item{alpha}{significance level}
+\item{c}{numeric. Tuning parameter for penalty terms (default 0.3).}
+
+\item{B}{integer. Number of Monte Carlo replicates for p-value calculation
+(default 1000). Higher values increase precision but take longer.}
 }
 \value{
 Test results, an object of class `"htest"` containing the following components:

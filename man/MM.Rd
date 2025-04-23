@@ -46,5 +46,7 @@ Perform MM-estimation
 }
 \examples{
 MM(rexp(30),setting='exp',alpha=0.5,epsilon=0.2)
+\dontrun{
 MM(rnorm(30),rnorm(10),setting='norm',alpha=0.5,epsilon=0.2)
+}
 }

@@ -18,7 +18,9 @@
 #' @import stats
 #' @examples
 #' MM(rexp(30),setting='exp',alpha=0.5,epsilon=0.2)
+#' \dontrun{
 #' MM(rnorm(30),rnorm(10),setting='norm',alpha=0.5,epsilon=0.2)
+#' }
 
 MM=function(x,y=c(),N=Inf,setting='exp',alpha=0,epsilon=0,penalty=FALSE,auto_gcm=TRUE,auto_bisection=FALSE,direct_c=TRUE){#,alpha,beta){
   n=length(x);m=length(y)

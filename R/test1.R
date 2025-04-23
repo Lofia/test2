@@ -3,9 +3,11 @@
 #'   Calculates a test statistic (Lambda) and a p-value.
 #'
 #' @param x numeric vector. The input data of observed sample, assumed to be sorted.
-#' @param alpha significance level
 #' @param setting character. Specifies the null distribution. Currently only
 #'   `'u'` (Uniform) is supported (default 'u').
+#' @param c numeric. Tuning parameter for penalty terms (default 0.3).
+#' @param B integer. Number of Monte Carlo replicates for p-value calculation
+#'   (default 1000). Higher values increase precision but take longer.
 #'
 #' @return Test results, an object of class `"htest"` containing the following components:
 #'   \item{statistic}{The value of the test statistic (Lambda).}
