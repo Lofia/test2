@@ -1,24 +1,52 @@
-#' @title Test1
-#' @description Perform P-test in the 1999 paper
+#' @title Basic draft of Test1
+#' @description Performs the P-test in the paper "(1999) Testing uniformity versus a monotone density".
+#'   Calculates a test statistic (Lambda) and a p-value.
 #'
-#' @param x sample data
+#' @param x numeric vector. The input data of observed sample, assumed to be sorted.
 #' @param alpha significance level
-#' @param setting assumed null distribution
+#' @param setting character. Specifies the null distribution. Currently only
+#'   `'u'` (Uniform) is supported (default 'u').
 #'
-#' @return test result
+#' @return Test results, an object of class `"htest"` containing the following components:
+#'   \item{statistic}{The value of the test statistic (Lambda).}
+#'   \item{p.value}{The p-value for the test, computed via simulation.}
+#'   \item{method}{A character string indicating the test performed.}
+#'   \item{data.name}{A character string giving the name of the data.}
+#'   \item{parameters}{A named numeric vector containing `c` (tuning parameter).}
+#'   \item{null.value}{Description of the null hypothesis distribution.}
+#'
 #' @export
 #' @import pbapply
 #' @import stats
+#'
 #' @examples
-#' test1(seq(0,1,0.01),alpha=0.05)
-#' test1(rep(0.5,100),alpha=0.05)
-test1=function(x,alpha=0.05,setting='u'){
+#' \dontrun{
+#' set.seed(123)
+#' # Data close to uniform
+#' uniform_data <- sort(runif(50))
+#' test_uniform <- test1(uniform_data, c = 0.3, B = 1000)
+#' print(test_uniform)
+#'
+#' # Data with a monotone trend (e.g., Beta(2,1))
+#' monotone_data <- sort(rbeta(50, 2, 1))
+#' test_monotone <- test1(monotone_data, c = 0.3, B = 1000)
+#' print(test_monotone)
+#' }
+#'
+#' @references Jiayang Sun. Michael Woodroofe. "Testing uniformity versus a monotone density."
+#' Ann. Statist. 27 (1) 338 - 360, February 1999. https://doi.org/10.1214/aos/1018031114
+#'
+test1=function(x,setting='u',c=0.3,B=1000){
+  n=length(x)
   op=pboptions(type="timer")
 
   if(setting=='u'){ # set null distribution to be U[0,1]
     Fx=function(x){return(x)}
-    info='null=U[0,1], w(x)~x'
+    info='U[0,1]'
     null_sample=function(n){return(runif(n))}
+  }else {
+    # Placeholder for future settings
+    stop("Setting not implemented.")
   }
 
 
@@ -67,7 +95,7 @@ test1=function(x,alpha=0.05,setting='u'){
   }
 
   f=function(nouse=NA,n=150,err0=0.00001,c=0.3,dist){ # function to generate test statistic for null/alternative
-    cat(info,', n=',n,', c=',c,sep='')
+    cat('null=',info,', n=',n,', c=',c,sep='')
     an=c*sqrt(n) # an=alpha*n, i.e., alpha=c/sqrt(n)=beta
     beta=c/sqrt(n)
     x=c(sort(dist(n)),1) # x[0]=0, x[n+1]=1 ###
@@ -92,26 +120,40 @@ test1=function(x,alpha=0.05,setting='u'){
     return(p+rt)
   }
 
-  g=function(N,C){ # function to compute critical values (1000 simulations for each setting)
-    pboptions(nout=1000) # number of independent trials
-    M=matrix(nrow=length(N),ncol=length(C))
+  g=function(n,C,B){ # function to compute null values (B simulations for each setting)
+    pboptions(nout=B) # number of independent trials
+    M=matrix(nrow=B,ncol=length(C))
     #cat('Computing critical value using the null distribution:\n')
-    for(i in 1:length(N)){
-      for(j in 1:length(C)){
-        M[i,j]=as.numeric(quantile(pbsapply(1:1000,f,n=N[i],c=C[j],dist=null_sample),1-alpha))
-      }
+    for(j in 1:length(C)){
+      M[,j]=pbsapply(1:B,f,n=n,c=C[j],dist=null_sample)
     }
-    rownames(M)=N
     colnames(M)=C
     #cat('critical values:\n')
     #print(M)
     return(M)
   }
 
-  critic=g(N=length(x),C=0.3)[1,1]
+  # critic=g(n=length(x),C=0.3)[1,1]
+  null_stats=g(n=length(x),C=c,B=B)[,1]
   lambda=f2(x)
-  if(lambda>critic) print(paste('Since lambda = ',round(lambda,3),' > ',round(critic,3)
-                                ,' = critical value ,we reject the null (no bias) hypothesis.',sep=''))
-  else print(paste('Since lambda = ',round(lambda,3),' < ',round(critic,3)
-                                ,' = critical value ,we fail to reject the null (no bias) hypothesis.',sep=''))
+  # if(lambda>critic) print(paste('Since lambda = ',round(lambda,3),' > ',round(critic,3)
+  #                               ,' = critical value ,we fail to reject the null (no bias) hypothesis.',sep=''))
+  # else print(paste('Since lambda = ',round(lambda,3),' < ',round(critic,3)
+  #                               ,' = critical value ,we reject the null (no bias) hypothesis.',sep=''))
+
+  result <- list(
+    statistic = structure(lambda, names = "Lambda"),
+    parameter = structure(c(c), names = c("c")),
+    p.value = sum(null_stats>lambda)/length(null_stats),
+    # conf.int = structure(conf.int, conf.level = 0.95),
+    # estimate = c('?'),
+    null.value = structure(info, names = "distribution"),
+    # alternative = 'monotone increasing bias',
+    method = 'Penalized Likelihood Ratio Test',
+    data.name = deparse(substitute(x))
+  )
+
+  class(result) <- "htest"
+  message("Simulation complete.")
+  return(result)
 }
